@@ -1,0 +1,1 @@
+create index order_items_half_flavor_product_id_idx on order_items (half_flavor_product_id);
