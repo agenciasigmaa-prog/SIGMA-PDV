@@ -5,6 +5,7 @@ import type { Addon, AddonGroup } from "./addons";
 import type { PromoBanner } from "./promoBanners";
 import type { ComboComponent } from "./comboItems";
 import type { ComboChoiceGroup } from "./comboChoiceGroups";
+import type { RemovableIngredient } from "./removableIngredients";
 
 export function useMenu(restaurantId: string | null) {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -14,6 +15,9 @@ export function useMenu(restaurantId: string | null) {
   const [banners, setBanners] = useState<PromoBanner[]>([]);
   const [comboItemsByProduct, setComboItemsByProduct] = useState<Map<string, ComboComponent[]>>(new Map());
   const [comboChoiceGroupsByProduct, setComboChoiceGroupsByProduct] = useState<Map<string, ComboChoiceGroup[]>>(
+    new Map(),
+  );
+  const [removableIngredientsByProduct, setRemovableIngredientsByProduct] = useState<Map<string, RemovableIngredient[]>>(
     new Map(),
   );
   const [loading, setLoading] = useState(true);
@@ -53,7 +57,21 @@ export function useMenu(restaurantId: string | null) {
         )
         .eq("combo.restaurant_id", restaurantId)
         .order("sort_order"),
-    ]).then(([{ data: cats }, { data: prods }, { data: groups }, { data: addonRows }, { data: bannerRows }, { data: comboRows }, { data: choiceGroupRows }]) => {
+      supabase
+        .from("public_removable_ingredients")
+        .select("product_id, ingredient_id, name")
+        .eq("restaurant_id", restaurantId),
+    ]).then(
+      ([
+        { data: cats },
+        { data: prods },
+        { data: groups },
+        { data: addonRows },
+        { data: bannerRows },
+        { data: comboRows },
+        { data: choiceGroupRows },
+        { data: ingredientRows },
+      ]) => {
       setCategories((cats as Category[]) ?? []);
       setProducts((prods as Product[]) ?? []);
       setAddonGroups((groups as AddonGroup[]) ?? []);
@@ -99,8 +117,21 @@ export function useMenu(restaurantId: string | null) {
       }
       setComboChoiceGroupsByProduct(choiceGroupMap);
 
+      const ingredientMap = new Map<string, RemovableIngredient[]>();
+      for (const row of (ingredientRows ?? []) as unknown as {
+        product_id: string;
+        ingredient_id: string;
+        name: string;
+      }[]) {
+        const list = ingredientMap.get(row.product_id) ?? [];
+        list.push({ ingredientId: row.ingredient_id, name: row.name });
+        ingredientMap.set(row.product_id, list);
+      }
+      setRemovableIngredientsByProduct(ingredientMap);
+
       setLoading(false);
-    });
+    },
+    );
   }, [restaurantId]);
 
   return {
@@ -111,6 +142,7 @@ export function useMenu(restaurantId: string | null) {
     banners,
     comboItemsByProduct,
     comboChoiceGroupsByProduct,
+    removableIngredientsByProduct,
     loading,
   };
 }
