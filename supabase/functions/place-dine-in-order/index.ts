@@ -9,6 +9,7 @@ type ItemInput = {
   addons?: AddonInput[];
   half_flavor_product_id?: string;
   combo_choices?: ComboChoiceInput[];
+  removed_ingredient_ids?: string[];
 };
 type HalfAndHalfPricingMode = "higher_price" | "average";
 
@@ -24,25 +25,54 @@ Deno.serve(async (req) => {
 
   try {
     const { user, serviceClient } = await requireCustomer(req);
+
+    // Pedido manual lançado pelo staff (telefone/balcão) não tem cliente de
+    // verdade por trás — se quem chamou é staff/admin, customer_id fica null
+    // em vez do id do funcionário (senão o histórico de "clientes" ficaria
+    // contaminado com o próprio staff).
+    const { data: callerProfile } = await serviceClient.from("profiles").select("role").eq("id", user.id).maybeSingle();
+    const callerIsStaff =
+      callerProfile?.role === "restaurant_owner" || callerProfile?.role === "restaurant_staff" || callerProfile?.role === "admin";
+    const customer_id = callerIsStaff ? null : user.id;
+
     const body = await req.json().catch(() => ({}));
-    const table_id = String(body.table_id ?? "");
+    const restaurant_id = String(body.restaurant_id ?? "");
+    const customer_name = String(body.customer_name ?? "").trim();
+    const table_label = String(body.table_label ?? "").trim();
+    const delivery_address_text = String(body.delivery_address ?? "").trim();
+    const order_type = body.order_type === "pickup" ? "pickup" : body.order_type === "delivery" ? "delivery" : "dine_in";
     const items = (Array.isArray(body.items) ? body.items : []) as ItemInput[];
 
-    if (!table_id || items.length === 0) {
-      return new Response(JSON.stringify({ error: "table_id and at least one item are required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    // Não existe mais mesa mapeada por QR — o cliente/staff digita o próprio
+    // nome e o número da mesa na hora de confirmar. Texto livre, só exige não
+    // vazio; não valida contra nada (decisão explícita — errar é raro e sem
+    // problema, a mesa é só endereço pro garçom entregar). Retirada no balcão
+    // não tem mesa — em vez disso, gera um código de retirada mais abaixo.
+    // Entrega não tem mesa nem código, mas precisa de endereço — mesmo texto
+    // livre, sem validar formato (staff digita o que o cliente falou).
+    if (
+      !restaurant_id ||
+      !customer_name ||
+      items.length === 0 ||
+      (order_type === "dine_in" && !table_label) ||
+      (order_type === "delivery" && !delivery_address_text)
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: "restaurant_id, customer_name, items e (mesa ou endereço, conforme o canal) are required",
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
 
-    const { data: table, error: tableError } = await serviceClient
-      .from("tables")
-      .select("id, restaurant_id")
-      .eq("id", table_id)
+    const { data: restaurant, error: restaurantError } = await serviceClient
+      .from("restaurants")
+      .select("id")
+      .eq("id", restaurant_id)
       .maybeSingle();
-    if (tableError) throw tableError;
-    if (!table) {
-      return new Response(JSON.stringify({ error: "Mesa não encontrada" }), {
+    if (restaurantError) throw restaurantError;
+    if (!restaurant) {
+      return new Response(JSON.stringify({ error: "Restaurante não encontrado" }), {
         status: 404,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -59,7 +89,7 @@ Deno.serve(async (req) => {
     const { data: products, error: productsError } = await serviceClient
       .from("products")
       .select("id, name, price, category_id, categories(allow_half_and_half, half_and_half_pricing)")
-      .eq("restaurant_id", table.restaurant_id)
+      .eq("restaurant_id", restaurant_id)
       .eq("active", true)
       .eq("sold_out", false)
       .in("id", productIds);
@@ -119,9 +149,9 @@ Deno.serve(async (req) => {
     }
 
     // Grupos de escolha dos combos pedidos ("escolha o hambúrguer") — busca
-    // pra TODOS os produtos pedidos (não só os que vieram com combo_choices
-    // no corpo), senão um client que simplesmente omite combo_choices
-    // passaria sem escolher nada de um grupo obrigatório.
+    // pra TODOS os produtos pedidos (não só os que vieram com combo_choices no
+    // corpo), senão um client que simplesmente omite combo_choices passaria
+    // sem escolher nada de um grupo obrigatório.
     const comboProductIds = [...new Set(items.map((item) => item.product_id))];
     const { data: choiceGroups, error: choiceGroupsError } = comboProductIds.length
       ? await serviceClient
@@ -147,8 +177,32 @@ Deno.serve(async (req) => {
       choiceGroupsByProduct.set(g.product_id, list);
     }
 
+    // Retirada de ingrediente: precisa pertencer mesmo à ficha técnica
+    // (product_ingredients) do produto pedido — mesma ética de nunca confiar
+    // só no que o client mandou. Não afeta preço.
+    const { data: productIngredientRows, error: productIngredientsError } = comboProductIds.length
+      ? await serviceClient
+          .from("product_ingredients")
+          .select("product_id, ingredient_id, ingredients(name)")
+          .in("product_id", comboProductIds)
+      : { data: [] as never[], error: null };
+    if (productIngredientsError) throw productIngredientsError;
+
+    const ingredientNameByProduct = new Map<string, Map<string, string>>();
+    for (const row of (productIngredientRows ?? []) as unknown as {
+      product_id: string;
+      ingredient_id: string;
+      ingredients: { name: string } | null;
+    }[]) {
+      if (!row.ingredients) continue;
+      const map = ingredientNameByProduct.get(row.product_id) ?? new Map<string, string>();
+      map.set(row.ingredient_id, row.ingredients.name);
+      ingredientNameByProduct.set(row.product_id, map);
+    }
+
     type ResolvedAddon = { addon_id: string; name: string; unit_price: number; quantity: number; group_id: string };
     type ResolvedComboChoice = { group_name: string; option_product_id: string; option_name: string };
+    type ResolvedRemovedIngredient = { ingredient_id: string; name: string };
     type ResolvedItem = {
       product_id: string;
       quantity: number;
@@ -157,19 +211,21 @@ Deno.serve(async (req) => {
       half_flavor_product_id: string | null;
       half_flavor_name: string | null;
       combo_choices: ResolvedComboChoice[];
+      removed_ingredients: ResolvedRemovedIngredient[];
     };
 
     const invalidAddonIds: string[] = [];
     const invalidHalfFlavorIds: string[] = [];
     const missingRequiredAddonGroupIds: string[] = [];
     const invalidComboChoiceGroupIds: string[] = [];
+    const invalidRemovedIngredientIds: string[] = [];
 
     const resolvedItems: ResolvedItem[] = items.map((item) => {
       const product = productById.get(item.product_id)!;
 
       const resolvedAddons: ResolvedAddon[] = (item.addons ?? []).flatMap((a) => {
         const addon = addonById.get(a.addon_id);
-        if (!addon || addon.category_id !== product.category_id || addon.restaurant_id !== table.restaurant_id) {
+        if (!addon || addon.category_id !== product.category_id || addon.restaurant_id !== restaurant_id) {
           invalidAddonIds.push(a.addon_id);
           return [];
         }
@@ -217,6 +273,15 @@ Deno.serve(async (req) => {
         resolvedComboChoices.push({ group_name: group.name, option_product_id: option.productId, option_name: option.name });
       }
 
+      const resolvedRemovedIngredients: ResolvedRemovedIngredient[] = (item.removed_ingredient_ids ?? []).flatMap((ingredientId) => {
+        const name = ingredientNameByProduct.get(item.product_id)?.get(ingredientId);
+        if (!name) {
+          invalidRemovedIngredientIds.push(ingredientId);
+          return [];
+        }
+        return [{ ingredient_id: ingredientId, name }];
+      });
+
       return {
         product_id: item.product_id,
         quantity: item.quantity,
@@ -225,6 +290,7 @@ Deno.serve(async (req) => {
         half_flavor_product_id: halfFlavorProductId,
         half_flavor_name: halfFlavorName,
         combo_choices: resolvedComboChoices,
+        removed_ingredients: resolvedRemovedIngredients,
       };
     });
 
@@ -261,6 +327,15 @@ Deno.serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
+    if (invalidRemovedIngredientIds.length > 0) {
+      return new Response(
+        JSON.stringify({
+          error: "Um ou mais ingredientes a remover não pertencem a esse produto",
+          invalid_removed_ingredients: invalidRemovedIngredientIds,
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
 
     // addons[].quantity é "quantidade do adicional por UNIDADE do produto" —
     // por isso o custo dos adicionais também multiplica pela quantidade do
@@ -270,38 +345,39 @@ Deno.serve(async (req) => {
       return sum + (item.unit_price + addonsPerUnit) * item.quantity;
     }, 0);
 
-    // Acha a sessão aberta da mesa ou cria uma — o índice único
-    // table_sessions_one_open_per_table (migration 0008) garante que duas
-    // tentativas concorrentes não criem duas comandas pra mesma mesa.
-    let sessionId: string;
-    const { data: newSession, error: insertSessionError } = await serviceClient
-      .from("table_sessions")
-      .insert({ table_id, status: "open" })
-      .select("id")
-      .single();
-
-    if (insertSessionError) {
-      if (insertSessionError.code !== "23505") throw insertSessionError;
-      const { data: existingSession, error: existingSessionError } = await serviceClient
-        .from("table_sessions")
-        .select("id")
-        .eq("table_id", table_id)
-        .eq("status", "open")
-        .single();
-      if (existingSessionError) throw existingSessionError;
-      sessionId = existingSession.id;
-    } else {
-      sessionId = newSession.id;
+    // Código de retirada: 4 dígitos, sequencial por dia por restaurante —
+    // conta quantos pedidos "pickup" esse restaurante já teve hoje e usa
+    // count + 1. Corrida entre dois pedidos simultâneos poderia, em teoria,
+    // gerar o mesmo número — aceitável nesse volume (staff lança manualmente
+    // por ora, não é canal de autoatendimento ainda).
+    let pickup_code: string | null = null;
+    if (order_type === "pickup") {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const { count, error: countError } = await serviceClient
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("restaurant_id", restaurant_id)
+        .eq("order_type", "pickup")
+        .gte("created_at", startOfToday.toISOString());
+      if (countError) throw countError;
+      pickup_code = String((count ?? 0) + 1).padStart(4, "0");
     }
 
+    // Cada pedido confirmado é seu próprio ticket, cobrado individualmente —
+    // não existe mais table_sessions/comanda agrupando vários pedidos da mesma
+    // mesa. table_session_id fica sempre null.
     const { data: order, error: orderError } = await serviceClient
       .from("orders")
       .insert({
-        restaurant_id: table.restaurant_id,
-        customer_id: user.id,
-        order_type: "dine_in",
+        restaurant_id,
+        customer_id,
+        order_type,
         status: "received",
-        table_session_id: sessionId,
+        customer_name,
+        table_label: order_type === "dine_in" ? table_label : null,
+        delivery_address: order_type === "delivery" ? { text: delivery_address_text } : null,
+        pickup_code,
         payment_status: "pending",
         subtotal: total,
         total,
@@ -311,7 +387,7 @@ Deno.serve(async (req) => {
     if (orderError) throw orderError;
 
     // Insere item por item (não em lote) pra conseguir o id de cada order_item
-    // na hora e já linkar adicionais/escolhas de combo dele corretamente.
+    // na hora e já linkar adicionais/escolhas/retiradas dele corretamente.
     for (const item of resolvedItems) {
       const { data: orderItem, error: itemError } = await serviceClient
         .from("order_items")
@@ -351,11 +427,22 @@ Deno.serve(async (req) => {
         );
         if (comboChoicesInsertError) throw comboChoicesInsertError;
       }
+
+      if (item.removed_ingredients.length > 0) {
+        const { error: removedInsertError } = await serviceClient.from("order_item_removed_ingredients").insert(
+          item.removed_ingredients.map((r) => ({
+            order_item_id: orderItem.id,
+            ingredient_id: r.ingredient_id,
+            ingredient_name: r.name,
+          })),
+        );
+        if (removedInsertError) throw removedInsertError;
+      }
     }
 
-    await serviceClient.from("restaurants").update({ last_order_at: new Date().toISOString() }).eq("id", table.restaurant_id);
+    await serviceClient.from("restaurants").update({ last_order_at: new Date().toISOString() }).eq("id", restaurant_id);
 
-    return new Response(JSON.stringify({ order_id: order.id, table_session_id: sessionId, total }), {
+    return new Response(JSON.stringify({ order_id: order.id, total, pickup_code }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {

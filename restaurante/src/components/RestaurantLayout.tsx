@@ -1,12 +1,13 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, LogOut, Table2, UtensilsCrossed } from "lucide-react";
+import { ClipboardList, LayoutDashboard, LogOut, Printer, UtensilsCrossed } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import sigmaLogo from "../assets/sigma-logo.png";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/cardapio", label: "Cardápio", icon: UtensilsCrossed },
-  { to: "/mesas", label: "Mesas", icon: Table2 },
+  { to: "/pedidos", label: "Pedidos", icon: ClipboardList },
+  { to: "/impressora", label: "Impressora", icon: Printer },
 ];
 
 export function RestaurantLayout() {
@@ -63,7 +64,7 @@ export function RestaurantLayout() {
 
       {/* Navegação de baixo só no celular — dedo alcança fácil, mesmo padrão de apps de POS */}
       <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card md:hidden">
-        <div className="grid grid-cols-3">
+        <div className="grid grid-cols-4">
           {navItems.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}

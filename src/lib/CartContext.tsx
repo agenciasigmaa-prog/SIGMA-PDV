@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { Product } from "./menu";
+import type { RemovableIngredient } from "./removableIngredients";
 
 export type CartAddon = { addonId: string; name: string; price: number; quantity: number };
 export type CartHalfFlavor = { productId: string; name: string; price: number };
@@ -14,9 +15,15 @@ export type CartItem = {
   addons: CartAddon[];
   halfFlavor?: { productId: string; name: string };
   comboChoices?: CartComboChoice[];
+  removedIngredients?: RemovableIngredient[];
 };
 
-type AddItemOptions = { addons?: CartAddon[]; halfFlavor?: CartHalfFlavor; comboChoices?: CartComboChoice[] };
+type AddItemOptions = {
+  addons?: CartAddon[];
+  halfFlavor?: CartHalfFlavor;
+  comboChoices?: CartComboChoice[];
+  removedIngredients?: RemovableIngredient[];
+};
 
 type CartValue = {
   items: CartItem[];
@@ -36,8 +43,8 @@ export function useCart() {
   return value;
 }
 
-function storageKey(tableId: string) {
-  return `sigma:cart:${tableId}`;
+function storageKey(restaurantId: string) {
+  return `sigma:cart:${restaurantId}`;
 }
 
 // Duas linhas do mesmo produto só se juntam se tiverem exatamente os mesmos
@@ -57,27 +64,36 @@ function comboChoiceSignature(choices: CartComboChoice[]): string {
     .join(",");
 }
 
-export function CartProvider({ tableId, children }: { tableId: string; children: ReactNode }) {
+function removedIngredientsSignature(removed: RemovableIngredient[]): string {
+  return [...removed]
+    .map((r) => r.ingredientId)
+    .sort()
+    .join(",");
+}
+
+export function CartProvider({ restaurantId, children }: { restaurantId: string; children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>(() => {
-    const raw = localStorage.getItem(storageKey(tableId));
+    const raw = localStorage.getItem(storageKey(restaurantId));
     return raw ? (JSON.parse(raw) as CartItem[]) : [];
   });
 
   useEffect(() => {
-    localStorage.setItem(storageKey(tableId), JSON.stringify(items));
-  }, [tableId, items]);
+    localStorage.setItem(storageKey(restaurantId), JSON.stringify(items));
+  }, [restaurantId, items]);
 
   function addItem(product: Product, options: AddItemOptions = {}) {
-    const { addons = [], halfFlavor, comboChoices = [] } = options;
+    const { addons = [], halfFlavor, comboChoices = [], removedIngredients = [] } = options;
     setItems((prev) => {
       const signature = addonSignature(addons);
       const choiceSignature = comboChoiceSignature(comboChoices);
+      const removedSignature = removedIngredientsSignature(removedIngredients);
       const existingIndex = prev.findIndex(
         (item) =>
           item.productId === product.id &&
           addonSignature(item.addons) === signature &&
           (item.halfFlavor?.productId ?? null) === (halfFlavor?.productId ?? null) &&
-          comboChoiceSignature(item.comboChoices ?? []) === choiceSignature,
+          comboChoiceSignature(item.comboChoices ?? []) === choiceSignature &&
+          removedIngredientsSignature(item.removedIngredients ?? []) === removedSignature,
       );
       if (existingIndex >= 0) {
         return prev.map((item, index) => (index === existingIndex ? { ...item, quantity: item.quantity + 1 } : item));
@@ -93,6 +109,7 @@ export function CartProvider({ tableId, children }: { tableId: string; children:
           addons,
           halfFlavor: halfFlavor ? { productId: halfFlavor.productId, name: halfFlavor.name } : undefined,
           comboChoices: comboChoices.length > 0 ? comboChoices : undefined,
+          removedIngredients: removedIngredients.length > 0 ? removedIngredients : undefined,
         },
       ];
     });

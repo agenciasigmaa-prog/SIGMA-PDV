@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { CurrencyInput } from "./CurrencyInput";
 import type { Ingredient, ProductIngredientLine, Unit } from "../lib/ingredients";
@@ -14,11 +14,13 @@ export function IngredientsEditor({
   lines,
   onChange,
   price,
+  onLiveCmvChange,
 }: {
   catalog: Ingredient[];
   lines: ProductIngredientLine[];
   onChange: (lines: ProductIngredientLine[]) => void;
   price: number | null;
+  onLiveCmvChange?: (cmv: number) => void;
 }) {
   const datalistId = useId();
   const [name, setName] = useState("");
@@ -101,8 +103,24 @@ export function IngredientsEditor({
     onChange(next);
   }
 
-  const cmv = totalCmv(lines);
+  // Custo do que está sendo digitado agora, mesmo antes de clicar em
+  // "Adicionar ingrediente" — é o que faz o total parecer instantâneo em vez
+  // de só atualizar depois de confirmar cada linha.
+  const quantityUsedNum = Number(quantity);
+  const packageQuantityNum = Number(packageQuantity);
+  const draftCost = (() => {
+    if (!name.trim() || !quantityUsedNum || quantityUsedNum <= 0) return 0;
+    if (matched) return matched.cost_per_unit * quantityUsedNum;
+    if (packagePrice == null || packagePrice < 0 || !packageQuantityNum || packageQuantityNum <= 0) return 0;
+    return (packagePrice / packageQuantityNum) * quantityUsedNum;
+  })();
+
+  const cmv = totalCmv(lines) + draftCost;
   const margin = price && price > 0 ? ((price - cmv) / price) * 100 : null;
+
+  useEffect(() => {
+    onLiveCmvChange?.(cmv);
+  }, [cmv, onLiveCmvChange]);
 
   return (
     <div className="rounded-xl border border-border p-3">
@@ -203,7 +221,9 @@ export function IngredientsEditor({
                 placeholder="Qtd."
                 className="w-16 shrink-0 rounded-xl border border-border px-2 py-1.5 text-sm"
               />
-              <span className="shrink-0 text-xs text-muted-foreground">{UNIT_LABEL[unit]}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {unit === "un" ? (packageQuantityNum === 1 ? "unidade" : "unidades") : UNIT_LABEL[unit]}
+              </span>
             </div>
           </div>
         )}

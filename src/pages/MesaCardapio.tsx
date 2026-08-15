@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { Header } from "../components/Header";
 import { CategoryRow } from "../components/CategoryRow";
@@ -16,11 +16,21 @@ import { checkCartPrices, type CartPriceCheckResult } from "../lib/cartPriceChec
 import type { Addon, AddonGroup } from "../lib/addons";
 import type { PromoBanner } from "../lib/promoBanners";
 import type { Product } from "../lib/menu";
+import type { RemovableIngredient } from "../lib/removableIngredients";
 
 export function MesaCardapio() {
-  const { tableId, tableLabel, restaurantId, restaurantName, logoUrl } = useTableContext();
-  const { categories, products, addonGroups, addons, banners, comboItemsByProduct, comboChoiceGroupsByProduct, loading } =
-    useMenu(restaurantId);
+  const { restaurantId, restaurantName, logoUrl } = useTableContext();
+  const {
+    categories,
+    products,
+    addonGroups,
+    addons,
+    banners,
+    comboItemsByProduct,
+    comboChoiceGroupsByProduct,
+    removableIngredientsByProduct,
+    loading,
+  } = useMenu(restaurantId);
   const { items, addItem, setQuantity, syncPrices, clear, subtotal, totalCount } = useCart();
 
   const [cartOpen, setCartOpen] = useState(false);
@@ -30,8 +40,11 @@ export function MesaCardapio() {
   const [pickerProduct, setPickerProduct] = useState<Product | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
-
-  const pendingKey = `sigma:pending-order:${tableId}`;
+  // Digitados pelo cliente na hora de confirmar — não existe mais mesa fixa
+  // vinda de QR. Texto livre, sem validar contra nada (decisão explícita).
+  const [customerName, setCustomerName] = useState("");
+  const [tableLabel, setTableLabel] = useState("");
+  const [lastOrderTableLabel, setLastOrderTableLabel] = useState("");
 
   // Somado por produto (não por linha) — é só pra mostrar contagem no card
   // do produto; o carrinho de verdade opera por linha (lineId).
@@ -64,12 +77,14 @@ export function MesaCardapio() {
     return { categorized, uncategorized };
   }, [categories, products]);
 
-  async function submitOrder() {
+  async function submitOrder(name: string, table: string) {
     setSubmitting(true);
     setError(null);
     const { data, error: fnError } = await supabase.functions.invoke("place-dine-in-order", {
       body: {
-        table_id: tableId,
+        restaurant_id: restaurantId,
+        customer_name: name,
+        table_label: table,
         items: items.map((item) => ({
           product_id: item.productId,
           quantity: item.quantity,
@@ -77,6 +92,9 @@ export function MesaCardapio() {
           ...(item.halfFlavor ? { half_flavor_product_id: item.halfFlavor.productId } : {}),
           ...(item.comboChoices
             ? { combo_choices: item.comboChoices.map((c) => ({ group_id: c.groupId, option_product_id: c.productId })) }
+            : {}),
+          ...(item.removedIngredients
+            ? { removed_ingredient_ids: item.removedIngredients.map((r) => r.ingredientId) }
             : {}),
         })),
       },
@@ -86,24 +104,30 @@ export function MesaCardapio() {
       setSubmitting(false);
       return;
     }
-    localStorage.removeItem(pendingKey);
     clear();
     setCartOpen(false);
     setOrderId(data.order_id as string);
+    setLastOrderTableLabel(table);
+    setCustomerName("");
+    setTableLabel("");
     setSubmitting(false);
   }
 
+  // Sem exigência de conta/login social por enquanto — decisão explícita
+  // (revisitar depois): o pedido só é "indexado" pelo nome/mesa digitados,
+  // não por identidade real. signInAnonymously() resolve na hora (sem
+  // redirect de página), só pra ter um customer_id/JWT válido pra passar
+  // pelo guard requireCustomer() da place-dine-in-order.
   async function goToLoginOrSubmit() {
     const { data } = await supabase.auth.getSession();
     if (!data.session) {
-      localStorage.setItem(pendingKey, "1");
-      await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo: window.location.href },
-      });
-      return;
+      const { error: signInError } = await supabase.auth.signInAnonymously();
+      if (signInError) {
+        setError(await describeFunctionError(signInError));
+        return;
+      }
     }
-    await submitOrder();
+    await submitOrder(customerName, tableLabel);
   }
 
   // Dispara uma única vez, só aqui — nunca em background, nunca de novo
@@ -136,13 +160,6 @@ export function MesaCardapio() {
     setCartOpen(true);
   }
 
-  useEffect(() => {
-    if (localStorage.getItem(pendingKey) !== "1") return;
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) submitOrder();
-    });
-  }, [tableId]);
-
   function handleSelectBanner(banner: PromoBanner) {
     if (!banner.category_id) return;
     document.getElementById(`categoria-${banner.category_id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -152,7 +169,13 @@ export function MesaCardapio() {
     const groups = product.category_id ? addonGroupsByCategory.get(product.category_id) : undefined;
     const category = product.category_id ? categoriesById.get(product.category_id) : undefined;
     const choiceGroups = comboChoiceGroupsByProduct.get(product.id);
-    if ((groups && groups.length > 0) || category?.allow_half_and_half || (choiceGroups && choiceGroups.length > 0)) {
+    const removable = removableIngredientsByProduct.get(product.id);
+    if (
+      (groups && groups.length > 0) ||
+      category?.allow_half_and_half ||
+      (choiceGroups && choiceGroups.length > 0) ||
+      (removable && removable.length > 0)
+    ) {
       setPickerProduct(product);
       return;
     }
@@ -163,18 +186,25 @@ export function MesaCardapio() {
     addons,
     halfFlavor,
     comboChoices,
+    removedIngredients,
   }: {
     addons: CartAddon[];
     halfFlavor?: CartHalfFlavor;
     comboChoices?: CartComboChoice[];
+    removedIngredients?: RemovableIngredient[];
   }) {
-    if (pickerProduct) addItem(pickerProduct, { addons, halfFlavor, comboChoices });
+    if (pickerProduct) addItem(pickerProduct, { addons, halfFlavor, comboChoices, removedIngredients });
     setPickerProduct(null);
   }
 
   function handleRemove(product: Product) {
     const line = items.find(
-      (item) => item.productId === product.id && item.addons.length === 0 && !item.halfFlavor && !item.comboChoices,
+      (item) =>
+        item.productId === product.id &&
+        item.addons.length === 0 &&
+        !item.halfFlavor &&
+        !item.comboChoices &&
+        !item.removedIngredients,
     );
     if (line) setQuantity(line.lineId, line.quantity - 1);
   }
@@ -193,7 +223,6 @@ export function MesaCardapio() {
     <div className="flex min-h-screen flex-col bg-background">
       <Header
         restaurantName={restaurantName}
-        tableLabel={tableLabel}
         logoUrl={logoUrl}
         cartCount={totalCount}
         onCartClick={() => setCartOpen(true)}
@@ -221,6 +250,7 @@ export function MesaCardapio() {
               hasHalfAndHalf={category.allow_half_and_half}
               comboItemsByProduct={comboItemsByProduct}
               comboChoiceGroupsByProduct={comboChoiceGroupsByProduct}
+              removableIngredientsByProduct={removableIngredientsByProduct}
               onAdd={handleAdd}
               onRemove={handleRemove}
             />
@@ -235,6 +265,7 @@ export function MesaCardapio() {
               hasAddons={false}
               comboItemsByProduct={comboItemsByProduct}
               comboChoiceGroupsByProduct={comboChoiceGroupsByProduct}
+              removableIngredientsByProduct={removableIngredientsByProduct}
               onAdd={handleAdd}
               onRemove={handleRemove}
             />
@@ -248,6 +279,10 @@ export function MesaCardapio() {
         subtotal={subtotal}
         submitting={submitting || checkingPrices}
         error={error}
+        customerName={customerName}
+        tableLabel={tableLabel}
+        onCustomerNameChange={setCustomerName}
+        onTableLabelChange={setTableLabel}
         onClose={() => setCartOpen(false)}
         onIncrement={handleIncrement}
         onDecrement={handleDecrement}
@@ -274,6 +309,7 @@ export function MesaCardapio() {
               return found ? [found] : [];
             }),
           }))}
+          removableIngredients={removableIngredientsByProduct.get(pickerProduct.id)}
           onClose={() => setPickerProduct(null)}
           onConfirm={handlePickerConfirm}
         />
@@ -293,7 +329,7 @@ export function MesaCardapio() {
             <CheckCircle2 className="mx-auto h-12 w-12 text-primary" aria-hidden />
             <h2 className="mt-3 text-lg font-bold">Pedido enviado!</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Seu pedido foi enviado pra cozinha. O garçom vai trazer até a mesa {tableLabel}.
+              Seu pedido foi enviado pra cozinha. O garçom vai trazer até a mesa {lastOrderTableLabel}.
             </p>
             <button
               type="button"

@@ -38,3 +38,60 @@ export async function requireCustomer(req: Request): Promise<{ user: User; servi
 
   return { user, serviceClient };
 }
+
+/**
+ * Verifies the caller is staff/owner of a restaurant, then returns a
+ * service-role client plus the caller's OWN restaurant_id (never trusts a
+ * restaurant_id coming from the client — the function calling this must
+ * compare the resource's restaurant_id against this returned value itself).
+ * Throws a Response to be returned as-is on failure.
+ */
+export async function requireRestaurantStaff(
+  req: Request,
+): Promise<{ user: User; serviceClient: ReturnType<typeof createClient>; restaurantId: string }> {
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader) {
+    throw new Response(JSON.stringify({ error: "Missing Authorization header" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const anonClient = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_ANON_KEY")!,
+    { global: { headers: { Authorization: authHeader } } },
+  );
+
+  const { data: { user }, error: userError } = await anonClient.auth.getUser();
+  if (userError || !user) {
+    throw new Response(JSON.stringify({ error: "Invalid session" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const serviceClient = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+  );
+
+  const { data: profile, error: profileError } = await serviceClient
+    .from("profiles")
+    .select("role, restaurant_id")
+    .eq("id", user.id)
+    .single();
+
+  if (
+    profileError ||
+    !profile?.restaurant_id ||
+    !["restaurant_owner", "restaurant_staff"].includes(profile.role)
+  ) {
+    throw new Response(JSON.stringify({ error: "Forbidden: restaurant staff role required" }), {
+      status: 403,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  return { user, serviceClient, restaurantId: profile.restaurant_id };
+}

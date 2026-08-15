@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ExternalLink, ImageIcon, Plus, Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ExternalLink, LayoutGrid, List, Search } from "lucide-react";
 import { CategoriesManager } from "../components/CategoriesManager";
 import { CategoryAddonsModal } from "../components/CategoryAddonsModal";
 import { CategoryFormModal } from "../components/CategoryFormModal";
@@ -9,7 +9,6 @@ import { BrandingSettings } from "../components/BrandingSettings";
 import { PromoBannerFormModal } from "../components/PromoBannerFormModal";
 import { PromoBannersManager } from "../components/PromoBannersManager";
 import { ProductPanel } from "../components/ProductPanel";
-import { ProductRow } from "../components/ProductRow";
 import { ProductSimulator } from "../components/ProductSimulator";
 import { useMenu } from "../lib/useMenu";
 import {
@@ -80,6 +79,13 @@ export function Cardapio() {
   const [tab, setTab] = useState<Tab>("produtos");
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
+  const [viewMode, setViewMode] = useState<"list" | "grid">(
+    () => (localStorage.getItem("sigma:produtos-view") as "list" | "grid") ?? "list",
+  );
+
+  useEffect(() => {
+    localStorage.setItem("sigma:produtos-view", viewMode);
+  }, [viewMode]);
 
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -253,6 +259,24 @@ export function Cardapio() {
                 </option>
               ))}
             </select>
+            <div className="flex shrink-0 gap-1 rounded-xl bg-muted p-1">
+              <button
+                type="button"
+                onClick={() => setViewMode("list")}
+                aria-label="Ver em lista"
+                className={`rounded-lg p-1.5 ${viewMode === "list" ? "bg-card shadow-card" : "text-muted-foreground"}`}
+              >
+                <List className="h-4 w-4" aria-hidden />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("grid")}
+                aria-label="Ver em cards"
+                className={`rounded-lg p-1.5 ${viewMode === "grid" ? "bg-card shadow-card" : "text-muted-foreground"}`}
+              >
+                <LayoutGrid className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
           </div>
 
           {isFiltering && (
@@ -285,14 +309,16 @@ export function Cardapio() {
                 return (
                   <CategorySection
                     key={category.id}
-                    category={category}
+                    title={category.name}
+                    imageUrl={category.image_url}
                     products={categoryProducts}
+                    view={viewMode}
+                    dragEnabled={!isFiltering}
                     onAddProduct={() => setProductModal({ defaultCategoryId: category.id })}
                     onEditProduct={(product) => setProductModal({ product, defaultCategoryId: category.id })}
                     onDuplicateProduct={handleDuplicateProduct}
                     onDeleteProduct={(product) => setDeletingProduct(product)}
-                    onMoveProductUp={(product) => moveProduct(product.id, "up")}
-                    onMoveProductDown={(product) => moveProduct(product.id, "down")}
+                    onReorder={reorderProducts}
                     onToggleProductActive={(product) => updateProduct(product.id, { active: !product.active })}
                     onToggleProductSoldOut={(product) => updateProduct(product.id, { sold_out: !product.sold_out })}
                     onToggleProductMostOrdered={(product) =>
@@ -303,38 +329,23 @@ export function Cardapio() {
               })}
 
               {uncategorized.length > 0 && (
-                <div className="rounded-2xl bg-card p-5 shadow-card">
-                  <div className="mb-1 flex items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-muted">
-                      <ImageIcon className="h-4 w-4 text-muted-foreground" aria-hidden />
-                    </div>
-                    <h3 className="flex-1 text-base font-bold">Sem categoria</h3>
-                    <button
-                      onClick={() => setProductModal({ defaultCategoryId: null })}
-                      className="flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted"
-                    >
-                      <Plus className="h-3.5 w-3.5" aria-hidden /> Produto
-                    </button>
-                  </div>
-                  <div>
-                    {uncategorized.map((product, index) => (
-                      <ProductRow
-                        key={product.id}
-                        product={product}
-                        isFirst={index === 0}
-                        isLast={index === uncategorized.length - 1}
-                        onEdit={() => setProductModal({ product, defaultCategoryId: null })}
-                        onDuplicate={() => handleDuplicateProduct(product)}
-                        onDelete={() => setDeletingProduct(product)}
-                        onMoveUp={() => moveProduct(product.id, "up")}
-                        onMoveDown={() => moveProduct(product.id, "down")}
-                        onToggleActive={() => updateProduct(product.id, { active: !product.active })}
-                        onToggleSoldOut={() => updateProduct(product.id, { sold_out: !product.sold_out })}
-                        onToggleMostOrdered={() => updateProduct(product.id, { most_ordered: !product.most_ordered })}
-                      />
-                    ))}
-                  </div>
-                </div>
+                <CategorySection
+                  title="Sem categoria"
+                  imageUrl={null}
+                  products={uncategorized}
+                  view={viewMode}
+                  dragEnabled={!isFiltering}
+                  onAddProduct={() => setProductModal({ defaultCategoryId: null })}
+                  onEditProduct={(product) => setProductModal({ product, defaultCategoryId: null })}
+                  onDuplicateProduct={handleDuplicateProduct}
+                  onDeleteProduct={(product) => setDeletingProduct(product)}
+                  onReorder={reorderProducts}
+                  onToggleProductActive={(product) => updateProduct(product.id, { active: !product.active })}
+                  onToggleProductSoldOut={(product) => updateProduct(product.id, { sold_out: !product.sold_out })}
+                  onToggleProductMostOrdered={(product) =>
+                    updateProduct(product.id, { most_ordered: !product.most_ordered })
+                  }
+                />
               )}
             </>
           )}

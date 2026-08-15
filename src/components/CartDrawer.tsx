@@ -9,6 +9,10 @@ export function CartDrawer({
   subtotal,
   submitting,
   error,
+  customerName,
+  tableLabel,
+  onCustomerNameChange,
+  onTableLabelChange,
   onClose,
   onIncrement,
   onDecrement,
@@ -19,6 +23,10 @@ export function CartDrawer({
   subtotal: number;
   submitting: boolean;
   error: string | null;
+  customerName: string;
+  tableLabel: string;
+  onCustomerNameChange: (value: string) => void;
+  onTableLabelChange: (value: string) => void;
   onClose: () => void;
   onIncrement: (lineId: string) => void;
   onDecrement: (lineId: string) => void;
@@ -62,6 +70,15 @@ export function CartDrawer({
                           ))}
                         </ul>
                       )}
+                      {item.removedIngredients && item.removedIngredients.length > 0 && (
+                        <ul className="mt-0.5">
+                          {item.removedIngredients.map((ingredient) => (
+                            <li key={ingredient.ingredientId} className="text-xs text-muted-foreground">
+                              Sem {ingredient.name}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       {item.addons.length > 0 && (
                         <ul className="mt-0.5">
                           {item.addons.map((addon) => (
@@ -101,13 +118,31 @@ export function CartDrawer({
 
         <div className="border-t border-border px-5 py-4">
           {error && <p className="mb-3 text-sm font-medium text-red-600">{error}</p>}
+          {items.length > 0 && (
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              <input
+                value={customerName}
+                onChange={(e) => onCustomerNameChange(e.target.value)}
+                placeholder="Seu nome"
+                aria-label="Seu nome"
+                className="min-w-0 rounded-xl border border-border px-3 py-2 text-sm"
+              />
+              <input
+                value={tableLabel}
+                onChange={(e) => onTableLabelChange(e.target.value)}
+                placeholder="Número da mesa"
+                aria-label="Número da mesa"
+                className="min-w-0 rounded-xl border border-border px-3 py-2 text-sm"
+              />
+            </div>
+          )}
           <div className="mb-3 flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Subtotal</span>
             <span className="text-base font-bold">{currency(subtotal)}</span>
           </div>
           <button
             type="button"
-            disabled={items.length === 0 || submitting}
+            disabled={items.length === 0 || submitting || !customerName.trim() || !tableLabel.trim()}
             onClick={onConfirm}
             className="press w-full rounded-full bg-primary py-3 text-sm font-bold text-primary-foreground shadow-card disabled:opacity-50"
           >

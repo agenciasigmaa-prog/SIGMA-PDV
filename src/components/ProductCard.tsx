@@ -8,6 +8,7 @@ export function ProductCard({
   hasAddons,
   hasHalfAndHalf,
   hasComboChoice,
+  hasRemovableIngredients,
   comboItems,
   onAdd,
   onRemove,
@@ -17,6 +18,7 @@ export function ProductCard({
   hasAddons: boolean;
   hasHalfAndHalf?: boolean;
   hasComboChoice?: boolean;
+  hasRemovableIngredients?: boolean;
   comboItems?: ComboComponent[];
   onAdd: () => void;
   onRemove: () => void;
@@ -80,7 +82,7 @@ export function ProductCard({
             <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold text-muted-foreground">
               Esgotado
             </span>
-          ) : quantity > 0 && !hasAddons && !hasHalfAndHalf && !hasComboChoice ? (
+          ) : quantity > 0 && !hasAddons && !hasHalfAndHalf && !hasComboChoice && !hasRemovableIngredients ? (
             <div className="press flex items-center gap-2 rounded-full bg-primary/10 px-1 py-1">
               <button
                 type="button"

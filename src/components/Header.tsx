@@ -1,14 +1,12 @@
-import { ShoppingCart, Utensils } from "lucide-react";
+import { ShoppingCart } from "lucide-react";
 
 export function Header({
   restaurantName,
-  tableLabel,
   logoUrl,
   cartCount,
   onCartClick,
 }: {
   restaurantName: string;
-  tableLabel: string;
   logoUrl: string | null;
   cartCount: number;
   onCartClick: () => void;
@@ -28,10 +26,6 @@ export function Header({
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-base font-bold tracking-tight">{restaurantName}</div>
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Utensils className="h-3 w-3" aria-hidden />
-            <span>Mesa {tableLabel}</span>
-          </div>
         </div>
         <button
           type="button"

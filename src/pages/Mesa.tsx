@@ -4,19 +4,19 @@ import { CartProvider } from "../lib/CartContext";
 import { MesaCardapio } from "./MesaCardapio";
 
 function MesaWithCart() {
-  const { tableId } = useTableContext();
+  const { restaurantId } = useTableContext();
   return (
-    <CartProvider tableId={tableId}>
+    <CartProvider restaurantId={restaurantId}>
       <MesaCardapio />
     </CartProvider>
   );
 }
 
 export function Mesa() {
-  const { token } = useParams<{ token: string }>();
-  if (!token) return null;
+  const { restaurantId } = useParams<{ restaurantId: string }>();
+  if (!restaurantId) return null;
   return (
-    <TableProvider token={token}>
+    <TableProvider restaurantId={restaurantId}>
       <MesaWithCart />
     </TableProvider>
   );

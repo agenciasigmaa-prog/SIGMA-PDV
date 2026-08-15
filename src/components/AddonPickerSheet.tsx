@@ -4,6 +4,7 @@ import type { Addon, AddonGroup } from "../lib/addons";
 import type { CartAddon, CartComboChoice, CartHalfFlavor } from "../lib/CartContext";
 import { computeHalfAndHalfPrice, type HalfAndHalfPricingMode } from "../lib/halfAndHalfPricing";
 import type { Product } from "../lib/menu";
+import type { RemovableIngredient } from "../lib/removableIngredients";
 
 const currency = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -21,6 +22,7 @@ export function AddonPickerSheet({
   groups,
   halfAndHalf,
   comboChoiceGroups,
+  removableIngredients,
   onClose,
   onConfirm,
 }: {
@@ -28,12 +30,19 @@ export function AddonPickerSheet({
   groups: { group: AddonGroup; addons: Addon[] }[];
   halfAndHalf?: { pricingMode: HalfAndHalfPricingMode; options: Product[] };
   comboChoiceGroups?: { id: string; name: string; options: Product[] }[];
+  removableIngredients?: RemovableIngredient[];
   onClose: () => void;
-  onConfirm: (payload: { addons: CartAddon[]; halfFlavor?: CartHalfFlavor; comboChoices?: CartComboChoice[] }) => void;
+  onConfirm: (payload: {
+    addons: CartAddon[];
+    halfFlavor?: CartHalfFlavor;
+    comboChoices?: CartComboChoice[];
+    removedIngredients?: RemovableIngredient[];
+  }) => void;
 }) {
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [halfFlavorId, setHalfFlavorId] = useState<string | null>(null);
   const [choiceSelections, setChoiceSelections] = useState<Record<string, string>>({});
+  const [removedIds, setRemovedIds] = useState<string[]>([]);
 
   function updateQuantity(addonId: string, delta: number) {
     setSelected((prev) => {
@@ -59,6 +68,12 @@ export function AddonPickerSheet({
   );
   const canConfirm = missingChoiceGroups.length === 0 && missingRequiredAddonGroups.length === 0;
 
+  function toggleRemovedIngredient(ingredientId: string) {
+    setRemovedIds((prev) =>
+      prev.includes(ingredientId) ? prev.filter((id) => id !== ingredientId) : [...prev, ingredientId],
+    );
+  }
+
   function handleConfirm() {
     if (!canConfirm) return;
     const chosen: CartAddon[] = allAddons
@@ -70,10 +85,12 @@ export function AddonPickerSheet({
       if (!option) return [];
       return [{ groupId: group.id, groupName: group.name, productId: option.id, name: option.name }];
     });
+    const removed = (removableIngredients ?? []).filter((ingredient) => removedIds.includes(ingredient.ingredientId));
     onConfirm({
       addons: chosen,
       halfFlavor: selectedHalfProduct ? { productId: selectedHalfProduct.id, name: selectedHalfProduct.name, price: basePrice } : undefined,
       comboChoices: comboChoices.length > 0 ? comboChoices : undefined,
+      removedIngredients: removed.length > 0 ? removed : undefined,
     });
   }
 
@@ -178,6 +195,33 @@ export function AddonPickerSheet({
               </ul>
             </div>
           ))}
+
+          {removableIngredients && removableIngredients.length > 0 && (
+            <div className="mb-5">
+              <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-muted-foreground">
+                Remover ingredientes
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {removableIngredients.map((ingredient) => {
+                  const isRemoved = removedIds.includes(ingredient.ingredientId);
+                  return (
+                    <button
+                      key={ingredient.ingredientId}
+                      type="button"
+                      onClick={() => toggleRemovedIngredient(ingredient.ingredientId)}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
+                        isRemoved
+                          ? "border-destructive bg-destructive/10 text-destructive line-through"
+                          : "border-border hover:bg-muted"
+                      }`}
+                    >
+                      {ingredient.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="border-t border-border px-5 py-4">

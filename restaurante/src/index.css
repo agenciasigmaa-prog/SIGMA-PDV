@@ -57,3 +57,25 @@ h3 {
     padding-bottom: env(safe-area-inset-bottom);
   }
 }
+
+/* Comanda impressa: fica fora da tela até a hora de imprimir — o tamanho
+   real da @page é injetado dinamicamente por restaurante/src/lib/printing.ts
+   (largura da bobina é uma configuração, não um valor fixo aqui). */
+#print-ticket {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 80mm;
+}
+
+@media print {
+  body > *:not(#print-ticket) {
+    display: none !important;
+  }
+
+  #print-ticket {
+    position: static;
+    left: 0;
+    width: 100%;
+  }
+}

@@ -1,6 +1,7 @@
 import type { Product } from "../lib/menu";
 import type { ComboComponent } from "../lib/comboItems";
 import type { ComboChoiceGroup } from "../lib/comboChoiceGroups";
+import type { RemovableIngredient } from "../lib/removableIngredients";
 import { ProductCard } from "./ProductCard";
 
 export function ProductSection({
@@ -12,6 +13,7 @@ export function ProductSection({
   hasHalfAndHalf,
   comboItemsByProduct,
   comboChoiceGroupsByProduct,
+  removableIngredientsByProduct,
   onAdd,
   onRemove,
 }: {
@@ -23,6 +25,7 @@ export function ProductSection({
   hasHalfAndHalf?: boolean;
   comboItemsByProduct?: Map<string, ComboComponent[]>;
   comboChoiceGroupsByProduct?: Map<string, ComboChoiceGroup[]>;
+  removableIngredientsByProduct?: Map<string, RemovableIngredient[]>;
   onAdd: (product: Product) => void;
   onRemove: (product: Product) => void;
 }) {
@@ -41,6 +44,7 @@ export function ProductSection({
             hasHalfAndHalf={hasHalfAndHalf}
             comboItems={comboItemsByProduct?.get(product.id)}
             hasComboChoice={(comboChoiceGroupsByProduct?.get(product.id)?.length ?? 0) > 0}
+            hasRemovableIngredients={(removableIngredientsByProduct?.get(product.id)?.length ?? 0) > 0}
             onAdd={() => onAdd(product)}
             onRemove={() => onRemove(product)}
           />

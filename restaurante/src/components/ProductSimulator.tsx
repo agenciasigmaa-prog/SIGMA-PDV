@@ -3,7 +3,6 @@ import { Sparkles } from "lucide-react";
 import { CurrencyInput } from "./CurrencyInput";
 import { IngredientsEditor } from "./IngredientsEditor";
 import type { Ingredient, ProductIngredientLine } from "../lib/ingredients";
-import { totalCmv } from "../lib/ingredients";
 
 const currency = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -17,8 +16,11 @@ export function ProductSimulator({
   const [name, setName] = useState("");
   const [ingredientLines, setIngredientLines] = useState<ProductIngredientLine[]>([]);
   const [targetPrice, setTargetPrice] = useState<number | null>(null);
+  const [cmv, setCmv] = useState(0);
+  // Muda a key do editor pra remontar do zero — inclusive limpa o rascunho de
+  // ingrediente que ainda não tinha sido adicionado (estado interno dele).
+  const [editorResetKey, setEditorResetKey] = useState(0);
 
-  const cmv = totalCmv(ingredientLines);
   const profit = targetPrice != null ? targetPrice - cmv : null;
   const margin = targetPrice != null && targetPrice > 0 ? (profit! / targetPrice) * 100 : null;
 
@@ -26,6 +28,7 @@ export function ProductSimulator({
     setName("");
     setIngredientLines([]);
     setTargetPrice(null);
+    setEditorResetKey((k) => k + 1);
   }
 
   function handleSend() {
@@ -56,7 +59,14 @@ export function ProductSimulator({
             />
           </div>
 
-          <IngredientsEditor catalog={catalog} lines={ingredientLines} onChange={setIngredientLines} price={targetPrice} />
+          <IngredientsEditor
+            key={editorResetKey}
+            catalog={catalog}
+            lines={ingredientLines}
+            onChange={setIngredientLines}
+            price={targetPrice}
+            onLiveCmvChange={setCmv}
+          />
 
           <div>
             <label className="mb-1 block text-sm font-medium">Preço que você pensa em cobrar (opcional)</label>

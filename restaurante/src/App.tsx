@@ -3,9 +3,10 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { RestaurantLayout } from "./components/RestaurantLayout";
 import { Cadastro } from "./pages/Cadastro";
 import { Cardapio } from "./pages/Cardapio";
+import { ConfiguracaoImpressao } from "./pages/ConfiguracaoImpressao";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
-import { Mesas } from "./pages/Mesas";
+import { Pedidos } from "./pages/Pedidos";
 import { Welcome } from "./pages/Welcome";
 
 function App() {
@@ -23,7 +24,8 @@ function App() {
         <Route path="/bem-vindo" element={<Welcome />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/cardapio" element={<Cardapio />} />
-        <Route path="/mesas" element={<Mesas />} />
+        <Route path="/pedidos" element={<Pedidos />} />
+        <Route path="/impressora" element={<ConfiguracaoImpressao />} />
       </Route>
       <Route path="/" element={<Navigate to="/login" replace />} />
     </Routes>
