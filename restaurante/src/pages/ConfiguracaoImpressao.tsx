@@ -1,162 +1,294 @@
-import { useState } from "react";
-import { Download, Printer } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Download, Loader2, Printer, RefreshCw } from "lucide-react";
+import { supabase } from "../lib/supabase";
+import { useSession } from "../lib/useSession";
 import {
-  getAutoPrintEnabled,
-  getStoredPaperWidth,
-  printTicket,
-  setAutoPrintEnabled,
-  setStoredPaperWidth,
-  PAPER_WIDTH_OPTIONS,
-  type PaperWidth,
-} from "../lib/printing";
-import type { IncomingOrder } from "../lib/orders";
+  describeAgentError,
+  getAgentConfig,
+  listPrinters,
+  printTeste,
+  probeAgent,
+  saveAgentConfig,
+  type AgentConfig,
+  type AgentHealth,
+  type AgentPrinter,
+} from "../lib/printAgent";
 
-// Precisa existir de verdade no bucket público do Supabase Storage antes de
-// divulgar o link pro restaurante — ver printer-app/README.md pra gerar e
-// publicar o .zip. Bucket "sigma-print-app" (nome exato, sem "agent"/"app"
-// trocados — já tivemos um bug de link quebrado por causa disso).
-//
-// O "?v=N" é só pra invalidar cache do navegador do lado do restaurante —
-// como a URL do arquivo nunca muda, o Chrome pode reaproveitar um .zip
-// antigo já baixado antes mesmo depois de publicar uma versão nova. Bump
-// esse número toda vez que reenviar o .zip (ver printer-app/README.md).
-const WRAPPER_DOWNLOAD_VERSION = 2;
-const WRAPPER_DOWNLOAD_URL = `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/sigma-print-app/sigma-print-app.zip?v=${WRAPPER_DOWNLOAD_VERSION}`;
+const PAPER_WIDTH_OPTIONS: { value: 58 | 80; label: string }[] = [
+  { value: 58, label: "58 mm" },
+  { value: 80, label: "80 mm" },
+];
 
-const SAMPLE_ORDER: IncomingOrder = {
-  id: "teste",
-  customer_name: "Pedido de teste",
-  table_label: "1",
-  pickup_code: null,
-  delivery_address: null,
-  status: "received",
-  order_type: "dine_in",
-  payment_status: "pending",
-  payment_method: null,
-  notes: null,
-  subtotal: 10,
-  discount_amount: 0,
-  service_charge_amount: 0,
-  total: 10,
-  created_at: new Date().toISOString(),
-  status_changed_at: new Date().toISOString(),
-  items: [
-    {
-      id: "teste-item",
-      product_name: "Impressão de teste",
-      quantity: 1,
-      unit_price: 10,
-      half_flavor_name: null,
-      notes: null,
-      addons: [],
-      combo_choices: [],
-      removed_ingredients: [],
-    },
-  ],
-};
+// Servido como arquivo estático pelo próprio app restaurante (Vite copia
+// tudo que está em public/ pro build sem processar) — ver
+// agente/README.md, seção "Publicar uma versão nova", pra como atualizar
+// esse arquivo depois de recompilar o agente.
+const AGENT_DOWNLOAD_URL = "/downloads/ImpressoraPDVSigma.exe";
 
 export function ConfiguracaoImpressao() {
-  const [autoPrint, setAutoPrint] = useState(getAutoPrintEnabled());
-  const [paperWidth, setPaperWidth] = useState<PaperWidth>(getStoredPaperWidth());
+  const { profile } = useSession();
+  const restaurantId = profile?.restaurant_id ?? null;
+  const [restaurantName, setRestaurantName] = useState("Restaurante");
 
-  function handleAutoPrintToggle(enabled: boolean) {
-    setAutoPrint(enabled);
-    setAutoPrintEnabled(enabled);
+  const [checking, setChecking] = useState(true);
+  const [agent, setAgent] = useState<AgentHealth | null>(null);
+  const [printers, setPrinters] = useState<AgentPrinter[]>([]);
+  const [config, setConfig] = useState<AgentConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<"ok" | string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!restaurantId) return;
+    supabase
+      .from("restaurants")
+      .select("name")
+      .eq("id", restaurantId)
+      .single()
+      .then(({ data }) => {
+        if (data?.name) setRestaurantName(data.name);
+      });
+  }, [restaurantId]);
+
+  // Tenta detectar sozinha ao abrir a tela. Em dev (localhost → 127.0.0.1)
+  // isso funciona sem prompt algum. Em produção, se o Chrome exigir o gesto
+  // de Local Network Access, esta chamada silenciosa simplesmente falha e a
+  // tela cai no estado "não detectado" — o clique em "Tentar novamente" (ou
+  // em "Imprimir página de teste") é o gesto que destrava o prompt.
+  useEffect(() => {
+    checkAgent();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function checkAgent() {
+    setChecking(true);
+    setError(null);
+    const health = await probeAgent();
+    setAgent(health);
+    if (health) {
+      try {
+        const [printerList, cfg] = await Promise.all([listPrinters(), getAgentConfig()]);
+        setPrinters(printerList);
+        setConfig(cfg);
+      } catch (err) {
+        setError(describeAgentError(err));
+      }
+    }
+    setChecking(false);
   }
 
-  function handlePaperWidthChange(width: PaperWidth) {
-    setPaperWidth(width);
-    setStoredPaperWidth(width);
+  async function handleSave() {
+    if (!config) return;
+    setSaving(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const updated = await saveAgentConfig(config);
+      setConfig(updated);
+      setSaved(true);
+    } catch (err) {
+      setError(describeAgentError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Botão de teste é sempre visível (mesmo sem agente detectado ainda) —
+  // clicar nele é o gesto de usuário que dispara (e, ao conceder, resolve) o
+  // prompt de Local Network Access do Chrome. Ver agente/README.md.
+  async function handleTest() {
+    setTesting(true);
+    setTestResult(null);
+    setError(null);
+    try {
+      // Se o agente ainda não tinha sido detectado, este clique é a chance
+      // de detectar de verdade (com gesto de usuário garantido).
+      if (!agent) await checkAgent();
+      const printerName = config?.printerName || printers[0]?.name || "";
+      const paperWidth = config?.paperWidth ?? 80;
+      await printTeste(restaurantName, printerName || "(padrão do sistema)", paperWidth);
+      setTestResult("ok");
+      // Depois de um teste bem-sucedido, reflete que o agente está de pé.
+      if (!agent) await checkAgent();
+    } catch (err) {
+      setTestResult(describeAgentError(err));
+    } finally {
+      setTesting(false);
+    }
   }
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="max-w-lg space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Impressão</h2>
+        <h2 className="text-xl font-bold">Impressora</h2>
         <p className="text-sm text-muted-foreground">
-          Comanda sai sozinha, sem precisar confirmar nada, quando roda dentro do app Sigma Impressão (abaixo).
+          Impressão silenciosa de comandas, via o agente instalado neste computador.
         </p>
       </div>
 
-      <div className="rounded-xl border border-border bg-card p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-bold">Impressão automática</h3>
-            <p className="text-xs text-muted-foreground">Imprime a comanda sozinha assim que o pedido chega.</p>
+      {checking && (
+        <div className="flex items-center gap-2 rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Procurando o agente…
+        </div>
+      )}
+
+      {!checking && !agent && (
+        <div className="space-y-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden />
+            <p className="text-sm font-bold text-amber-900">Impressora PDV-Sigma não encontrada nesta máquina</p>
           </div>
-          <button
-            onClick={() => handleAutoPrintToggle(!autoPrint)}
-            role="switch"
-            aria-checked={autoPrint}
-            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${autoPrint ? "bg-primary" : "bg-muted"}`}
+
+          <a
+            href={AGENT_DOWNLOAD_URL}
+            download
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3.5 text-base font-bold text-primary-foreground shadow-card hover:brightness-105"
           >
-            <span
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-card transition-transform ${
-                autoPrint ? "translate-x-5" : "translate-x-0.5"
-              }`}
-            />
+            <Download className="h-5 w-5" aria-hidden /> Baixar ImpressoraPDVSigma.exe
+          </a>
+
+          <ol className="list-decimal space-y-0.5 pl-4 text-sm text-amber-800">
+            <li>Baixe o instalador pelo botão acima.</li>
+            <li>Copie o arquivo para uma pasta fixa, ex. <code>C:\ImpressoraPDVSigma\</code>.</li>
+            <li>Dê dois cliques para rodar o <code>ImpressoraPDVSigma.exe</code> uma vez.</li>
+            <li>
+              Um ícone aparece na bandeja do Windows e o início automático já é ligado sozinho na primeira vez (dá
+              pra conferir/desligar clicando com o botão direito no ícone).
+            </li>
+            <li>Clique em "Imprimir página de teste" abaixo.</li>
+          </ol>
+
+          <button
+            onClick={checkAgent}
+            className="flex items-center gap-1.5 rounded-full border border-amber-400 bg-white px-3 py-1.5 text-xs font-bold text-amber-900 hover:bg-amber-100"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Tentar novamente
           </button>
         </div>
-      </div>
+      )}
 
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="mb-2 text-sm font-bold">Tamanho da bobina</h3>
-        <div className="flex gap-1 rounded-full bg-muted p-1">
-          {PAPER_WIDTH_OPTIONS.map(({ value, label }) => (
-            <button
-              key={value}
-              onClick={() => handlePaperWidthChange(value)}
-              className={`flex-1 rounded-full px-3 py-1.5 text-xs font-bold ${
-                paperWidth === value ? "bg-card shadow-card" : "text-muted-foreground"
-              }`}
+      {!checking && agent && config && (
+        <div className="space-y-4 rounded-xl border border-border p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Impressora PDV-Sigma conectada — versão {agent.version}
+            </p>
+            <a
+              href={AGENT_DOWNLOAD_URL}
+              download
+              className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
             >
-              {label}
+              <Download className="h-3 w-3" aria-hidden /> Baixar versão mais recente
+            </a>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium">Impressora</label>
+            <select
+              value={config.printerName}
+              onChange={(e) => setConfig({ ...config, printerName: e.target.value })}
+              className="w-full rounded-xl border border-border px-3 py-2 text-sm"
+            >
+              <option value="">Selecione…</option>
+              {printers.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name} {p.isDefault ? "(padrão do sistema)" : ""}
+                </option>
+              ))}
+            </select>
+            {printers.length === 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Nenhuma impressora encontrada — confira se ela está instalada no Windows.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium">Largura do papel</label>
+            <div className="flex gap-2">
+              {PAPER_WIDTH_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setConfig({ ...config, paperWidth: opt.value })}
+                  className={`rounded-full px-4 py-1.5 text-xs font-bold ${
+                    config.paperWidth === opt.value
+                      ? "bg-primary text-primary-foreground"
+                      : "border border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium">Cópias por comanda</label>
+            <input
+              type="number"
+              min={1}
+              max={5}
+              value={config.copies}
+              onChange={(e) => setConfig({ ...config, copies: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })}
+              className="w-24 rounded-xl border border-border px-3 py-2 text-sm"
+            />
+          </div>
+
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={config.autoPrint}
+              onChange={(e) => setConfig({ ...config, autoPrint: e.target.checked })}
+              className="h-4 w-4 rounded border-border"
+            />
+            Imprimir automaticamente ao chegar um pedido novo
+          </label>
+
+          <div className="flex flex-wrap items-center gap-2 pt-2">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground shadow-card hover:brightness-105 disabled:opacity-60"
+            >
+              {saving ? "Salvando..." : saved ? "Salvo!" : "Salvar"}
             </button>
-          ))}
+            <button
+              onClick={handleTest}
+              disabled={testing}
+              className="flex items-center gap-1.5 rounded-full border border-border px-4 py-2.5 text-sm font-bold hover:bg-muted disabled:opacity-60"
+            >
+              {testing ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Printer className="h-4 w-4" aria-hidden />}
+              Imprimir página de teste
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="mb-2 text-sm font-bold">App Sigma Impressão</h3>
-        <p className="mb-3 text-xs text-muted-foreground">
-          Baixe, extraia o .zip numa pasta e abra o <code>sigma-print-app.exe</code> no computador ligado na
-          impressora — sem senha, sem escolher impressora na tela. Ele usa a impressora que estiver definida como{" "}
-          <strong>padrão no Windows</strong>. Deixe aberto o dia todo (ele já abre sozinho com o Windows se você
-          colocar um atalho na pasta de inicialização). Precisa do{" "}
-          <a
-            href="https://dotnet.microsoft.com/download/dotnet/8.0/runtime?cid=getdotnetcore&os=windows&arch=x64"
-            target="_blank"
-            rel="noreferrer"
-            className="underline"
-          >
-            .NET 8 Desktop Runtime
-          </a>{" "}
-          — se não tiver instalado, o próprio Windows mostra um aviso oficial da Microsoft com o link certo na
-          primeira tentativa de abrir.
-        </p>
-        <a
-          href={WRAPPER_DOWNLOAD_URL}
-          className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-2 text-xs font-bold text-primary-foreground hover:brightness-105"
-        >
-          <Download className="h-3.5 w-3.5" aria-hidden /> Baixar Sigma Impressão (.zip)
-        </a>
-      </div>
-
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-bold">
-          <Printer className="h-4 w-4" aria-hidden /> Testar impressão
-        </h3>
-        <p className="mb-3 text-xs text-muted-foreground">
-          Fora do app Sigma Impressão isso abre o diálogo normal do navegador — é esperado, serve só pra conferir o
-          layout.
-        </p>
+      {!checking && !agent && (
         <button
-          onClick={() => printTicket(SAMPLE_ORDER)}
-          className="rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:brightness-105"
+          onClick={handleTest}
+          disabled={testing}
+          className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-card hover:brightness-105 disabled:opacity-60"
         >
-          Imprimir teste
+          {testing ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Printer className="h-4 w-4" aria-hidden />}
+          Imprimir página de teste
         </button>
-      </div>
+      )}
+
+      {testResult === "ok" && (
+        <p className="flex items-center gap-1.5 text-sm font-medium text-emerald-700">
+          <CheckCircle2 className="h-4 w-4" aria-hidden /> Página de teste enviada — confira o papel.
+        </p>
+      )}
+      {testResult && testResult !== "ok" && (
+        <p className="flex items-start gap-1.5 text-sm font-medium text-destructive">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden /> {testResult}
+        </p>
+      )}
+      {error && <p className="text-sm font-medium text-destructive">{error}</p>}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bike, CheckCircle2, ClipboardList, MapPin, Plus, Printer, ShoppingBag, Utensils, X } from "lucide-react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ManualOrderModal } from "../components/ManualOrderModal";
@@ -15,7 +15,8 @@ import {
 } from "../lib/orders";
 import { useSession } from "../lib/useSession";
 import { playOrderSound } from "../lib/orderSound";
-import { getAutoPrintEnabled, printTicket } from "../lib/printing";
+import { supabase } from "../lib/supabase";
+import { describeAgentError, getAgentConfig, printOrder, probeAgent } from "../lib/printAgent";
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   received: "Recebido",
@@ -197,6 +198,9 @@ export function Pedidos() {
   const [showManualOrder, setShowManualOrder] = useState(false);
   const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
   const [, forceTick] = useState(0);
+  const [restaurantName, setRestaurantName] = useState("Restaurante");
+  const [autoPrint, setAutoPrint] = useState(false);
+  const [printWarning, setPrintWarning] = useState<string | null>(null);
 
   // Deriva do array vivo de `orders` (não guarda o objeto do pedido em si)
   // pra que a edição via staff-edit-order reflita na hora, assim que o
@@ -210,17 +214,67 @@ export function Pedidos() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (!restaurantId) return;
+    supabase
+      .from("restaurants")
+      .select("name")
+      .eq("id", restaurantId)
+      .single()
+      .then(({ data }) => {
+        if (data?.name) setRestaurantName(data.name);
+      });
+  }, [restaurantId]);
+
+  // Auto-print é lido do config.json do agente local, não de localStorage —
+  // é preferência por máquina, salva na tela /impressora. Recarrega quando a
+  // aba volta a ficar em foco, pra pegar uma mudança salva em outra aba sem
+  // precisar recarregar o board inteiro.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAutoPrint() {
+      const health = await probeAgent();
+      if (!health || cancelled) return;
+      try {
+        const cfg = await getAgentConfig();
+        if (!cancelled) setAutoPrint(cfg.autoPrint);
+      } catch {
+        // Agente respondeu ao /health mas falhou no /config — mantém o
+        // auto-print como estava, não vale a pena travar o board por isso.
+      }
+    }
+    loadAutoPrint();
+    window.addEventListener("focus", loadAutoPrint);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", loadAutoPrint);
+    };
+  }, []);
+
+  // Falha de impressão nunca pode derrubar o board — só avisa, discretamente
+  // e por tempo limitado, e some sozinha.
+  const printOrderTicket = useCallback(
+    (order: IncomingOrder) => {
+      printOrder(order, restaurantName).catch((err) => {
+        setPrintWarning(`Falha ao imprimir comanda de ${order.customer_name}: ${describeAgentError(err)}`);
+        setTimeout(() => setPrintWarning(null), 8000);
+      });
+    },
+    [restaurantName],
+  );
+
   // Pedido novo chegou via realtime (INSERT) — toca um som diferente pra
-  // entrega vs. mesa/retirada (não depende de olhar a tela).
+  // entrega vs. mesa/retirada (não depende de olhar a tela) e, se
+  // auto-print estiver ligado, manda a comanda pro agente local sozinho.
   useEffect(() => {
     if (!justInsertedOrderId) return;
     const order = orders.find((o) => o.id === justInsertedOrderId);
     if (order) {
       playOrderSound(order.order_type);
-      if (getAutoPrintEnabled()) printTicket(order);
+      if (autoPrint) printOrderTicket(order);
       clearJustInsertedOrder();
     }
-  }, [justInsertedOrderId, orders, clearJustInsertedOrder]);
+  }, [justInsertedOrderId, orders, clearJustInsertedOrder, autoPrint, printOrderTicket]);
 
   const filtered = useMemo(() => {
     let list = channelFilter === "all" ? orders : orders.filter((o) => o.order_type === channelFilter);
@@ -281,6 +335,12 @@ export function Pedidos() {
         </div>
       </div>
 
+      {printWarning && (
+        <p className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+          {printWarning}
+        </p>
+      )}
+
       {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
 
       {!loading && (
@@ -321,7 +381,7 @@ export function Pedidos() {
                         }}
                         onCancel={() => setCancelling(order)}
                         onDetail={() => setDetailOrderId(order.id)}
-                        onPrint={() => printTicket(order)}
+                        onPrint={() => printOrderTicket(order)}
                       />
                     ))
                   )}
