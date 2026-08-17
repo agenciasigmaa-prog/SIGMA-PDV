@@ -1,6 +1,9 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { ClipboardList, LayoutDashboard, LogOut, Printer, UtensilsCrossed } from "lucide-react";
+import { AlertTriangle, ClipboardList, LayoutDashboard, LogOut, Printer, UtensilsCrossed } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import { useSession } from "../lib/useSession";
+import { useRestaurantName } from "../lib/restaurant";
+import { useAutoPrintOnNewOrders } from "../lib/autoPrint";
 import sigmaLogo from "../assets/sigma-logo.png";
 
 const navItems = [
@@ -11,6 +14,14 @@ const navItems = [
 ];
 
 export function RestaurantLayout() {
+  const { profile } = useSession();
+  const restaurantId = profile?.restaurant_id ?? null;
+  const restaurantName = useRestaurantName(restaurantId);
+  // Montado aqui (fora do <Outlet/>), não em Pedidos.tsx, justamente pra som
+  // e impressão automática funcionarem em qualquer tela — não só com o
+  // board de pedidos aberto.
+  const { printWarning } = useAutoPrintOnNewOrders(restaurantId, restaurantName);
+
   return (
     <div className="flex min-h-screen flex-col bg-background md:flex-row">
       {/* Barra de cima só no celular — a lateral (abaixo) assume no desktop */}
@@ -59,6 +70,11 @@ export function RestaurantLayout() {
       </aside>
 
       <main className="flex-1 overflow-x-auto p-4 pb-24 md:p-8 md:pb-8">
+        {printWarning && (
+          <p className="mb-4 flex items-start gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /> {printWarning}
+          </p>
+        )}
         <Outlet />
       </main>
 

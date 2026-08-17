@@ -14,9 +14,8 @@ import {
   type OrderType,
 } from "../lib/orders";
 import { useSession } from "../lib/useSession";
-import { playOrderSound } from "../lib/orderSound";
-import { supabase } from "../lib/supabase";
-import { describeAgentError, getAgentConfig, printOrder, probeAgent } from "../lib/printAgent";
+import { useRestaurantName } from "../lib/restaurant";
+import { describeAgentError, printOrder } from "../lib/printAgent";
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   received: "Recebido",
@@ -190,16 +189,14 @@ function OrderCard({
 export function Pedidos() {
   const { profile } = useSession();
   const restaurantId = profile?.restaurant_id ?? null;
-  const { orders, loading, advanceStatus, cancelOrder, registerPayment, justInsertedOrderId, clearJustInsertedOrder } =
-    useIncomingOrders(restaurantId);
+  const restaurantName = useRestaurantName(restaurantId);
+  const { orders, loading, advanceStatus, cancelOrder, registerPayment } = useIncomingOrders(restaurantId);
   const [channelFilter, setChannelFilter] = useState<"all" | OrderType>("all");
   const [search, setSearch] = useState("");
   const [cancelling, setCancelling] = useState<IncomingOrder | null>(null);
   const [showManualOrder, setShowManualOrder] = useState(false);
   const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
   const [, forceTick] = useState(0);
-  const [restaurantName, setRestaurantName] = useState("Restaurante");
-  const [autoPrint, setAutoPrint] = useState(false);
   const [printWarning, setPrintWarning] = useState<string | null>(null);
 
   // Deriva do array vivo de `orders` (não guarda o objeto do pedido em si)
@@ -214,45 +211,10 @@ export function Pedidos() {
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    if (!restaurantId) return;
-    supabase
-      .from("restaurants")
-      .select("name")
-      .eq("id", restaurantId)
-      .single()
-      .then(({ data }) => {
-        if (data?.name) setRestaurantName(data.name);
-      });
-  }, [restaurantId]);
-
-  // Auto-print é lido do config.json do agente local, não de localStorage —
-  // é preferência por máquina, salva na tela /impressora. Recarrega quando a
-  // aba volta a ficar em foco, pra pegar uma mudança salva em outra aba sem
-  // precisar recarregar o board inteiro.
-  useEffect(() => {
-    let cancelled = false;
-    async function loadAutoPrint() {
-      const health = await probeAgent();
-      if (!health || cancelled) return;
-      try {
-        const cfg = await getAgentConfig();
-        if (!cancelled) setAutoPrint(cfg.autoPrint);
-      } catch {
-        // Agente respondeu ao /health mas falhou no /config — mantém o
-        // auto-print como estava, não vale a pena travar o board por isso.
-      }
-    }
-    loadAutoPrint();
-    window.addEventListener("focus", loadAutoPrint);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("focus", loadAutoPrint);
-    };
-  }, []);
-
-  // Falha de impressão nunca pode derrubar o board — só avisa, discretamente
-  // e por tempo limitado, e some sozinha.
+  // Reimpressão manual (botão na comanda) — a automática, disparada por
+  // pedido novo, vive em `useAutoPrintOnNewOrders` (montado no layout, não
+  // aqui), pra funcionar mesmo com este board fechado. Falha nunca pode
+  // derrubar a tela — só avisa, discretamente e por tempo limitado.
   const printOrderTicket = useCallback(
     (order: IncomingOrder) => {
       printOrder(order, restaurantName).catch((err) => {
@@ -262,19 +224,6 @@ export function Pedidos() {
     },
     [restaurantName],
   );
-
-  // Pedido novo chegou via realtime (INSERT) — toca um som diferente pra
-  // entrega vs. mesa/retirada (não depende de olhar a tela) e, se
-  // auto-print estiver ligado, manda a comanda pro agente local sozinho.
-  useEffect(() => {
-    if (!justInsertedOrderId) return;
-    const order = orders.find((o) => o.id === justInsertedOrderId);
-    if (order) {
-      playOrderSound(order.order_type);
-      if (autoPrint) printOrderTicket(order);
-      clearJustInsertedOrder();
-    }
-  }, [justInsertedOrderId, orders, clearJustInsertedOrder, autoPrint, printOrderTicket]);
 
   const filtered = useMemo(() => {
     let list = channelFilter === "all" ? orders : orders.filter((o) => o.order_type === channelFilter);
