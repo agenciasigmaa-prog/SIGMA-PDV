@@ -1,64 +1,66 @@
 # PDV Agência Sigma — Como o sistema funciona
 
-Relatório técnico do que está construído e funcionando hoje, tela por tela, com a peça de backend que sustenta cada uma. O sistema é composto por **três aplicações independentes** (Vite + React 19 + TypeScript + Tailwind v4) que compartilham **um único backend Supabase** (Postgres + Auth + Storage + Edge Functions). Não existe API própria: cada app fala direto com o Supabase, e a autorização é garantida por Row Level Security (RLS) no banco — não por lógica de frontend.
+Relatório técnico do que está construído e funcionando hoje, tela por tela, com a peça de backend que sustenta cada uma. O sistema é composto por **três aplicações independentes** (Vite + React 19 + TypeScript + Tailwind v4) que compartilham **um único backend Supabase** (Postgres + Auth + Storage + Edge Functions), mais **um agente nativo em Go** que roda no computador do restaurante só pra imprimir comandas. Não existe API própria: cada app fala direto com o Supabase, e a autorização é garantida por Row Level Security (RLS) no banco — não por lógica de frontend.
 
 ## Modelo de dados e papéis
 
-Uma agência (**ADM**) gerencia vários restaurantes (**tenants**). Cada restaurante tem seu próprio cardápio, mesas e pedidos, isolados dos demais pelo `restaurant_id`. Todo usuário autenticado tem um `profile` com um papel (`role`):
+Uma agência (**ADM**) gerencia vários restaurantes (**tenants**). Cada restaurante tem seu próprio cardápio e board de pedidos, isolados dos demais pelo `restaurant_id`. Todo usuário autenticado tem um `profile` com um papel (`role`):
 
 - **`admin`** — time da agência, acessa o painel `admin/`, enxerga todos os tenants.
 - **`restaurant_owner` / `restaurant_staff`** — equipe do restaurante, acessa `restaurante/`, só enxerga o próprio tenant.
-- **`customer`** — cliente final, criado automaticamente em qualquer signup (Google ou e-mail/senha) por um trigger (`handle_new_user`). Nunca é atribuído manualmente.
+- **`customer`** — cliente final, criado automaticamente por um trigger (`handle_new_user`) em qualquer signup, **inclusive login anônimo** (é assim que o cliente do cardápio público entra — ver seção 1). Nunca é atribuído manualmente.
 
 Ninguém sobe de papel sozinho: `restaurant_owner` só nasce pelo fluxo de convite do admin, e `admin` não é auto-atribuível — isso é garantido por RLS e por um trigger (`prevent_role_escalation`) que bloqueia `UPDATE` em `profiles.role` fora dos caminhos controlados.
 
-Toda leitura e escrita passa por policies de RLS baseadas em duas funções auxiliares (`current_app_role()`, `current_restaurant_id()`), que leem o perfil do usuário logado sem recursão. `categories`, `products`, `tables` e (parcialmente) `restaurants` são públicas para leitura — o cardápio precisa aparecer pra quem não está logado.
+Toda leitura e escrita passa por policies de RLS baseadas em duas funções auxiliares (`current_app_role()`, `current_restaurant_id()`), que leem o perfil do usuário logado sem recursão. `categories`, `products` e (parcialmente) `restaurants` são públicas para leitura — o cardápio precisa aparecer pra quem não está logado.
 
 ---
 
-## 1. Storefront do cliente final (app raiz, porta 5173)
+## 1. Cardápio do cliente final (app raiz, porta 5173)
 
-Onde o cliente sentado à mesa faz o pedido, sem precisar criar conta antes de navegar o cardápio.
+Onde o cliente faz o pedido, sem precisar criar conta. O ponto de entrada é **por restaurante, não por mesa**: `/loja/:restaurantId`. Não existe mais QR Code por mesa física com token único — a URL raiz sem `restaurantId` (`/`) mostra uma tela genérica "Acesse pelo QR Code da sua mesa", já que o QR Code impresso na mesa aponta direto pro link do restaurante.
 
-### Acesso pela mesa (`/mesa/:token`)
+### Abrindo o cardápio
 
-Cada mesa física tem um QR Code impresso apontando para uma URL com um token único (`tables.qr_token`, um UUID gerado automaticamente). Ao abrir o link, o app:
+Ao abrir `/loja/:restaurantId`, o app resolve o restaurante e a marca dele (`restaurant_branding`) num contexto React único, carrega categorias/produtos ativos (`useMenu`) e monta a tela em cima disso. Se o `restaurantId` não existir, mostra "Restaurante não encontrado" em vez de quebrar.
 
-1. Busca a mesa pelo token (`useTableContext`) e resolve o restaurante dono dela.
-2. Se o token não existe, mostra "Mesa não encontrada — confira o QR Code" em vez de quebrar.
-3. Guarda `restaurantId`, `tableId`, `tableLabel` e `restaurantName` num React Context, disponível pro resto da árvore sem precisar re-buscar em cada componente.
+**Identidade visual do restaurante** é aplicada em três pontos, lidos de `restaurant_branding`: a cor principal vira uma variável CSS global (`--color-primary`) que colore todo botão/destaque da tela; o favicon e o título da aba trocam pro do restaurante; e a logo aparece no cabeçalho (ou um quadrado com a inicial do nome, se não houver logo).
 
-A URL raiz sem token (`/`) mostra "Acesse pelo QR Code da sua mesa" — não existe cardápio genérico fora do contexto de uma mesa, porque o pedido sempre precisa saber pra onde vai.
+### Navegando o cardápio
 
-### Cardápio
+No topo, um **carrossel de banners promocionais** (se o restaurante tiver algum cadastrado) — imagem cheia com gradiente, título, subtítulo opcional e botão; tocar num banner rola a tela até a categoria vinculada a ele, se houver. Abaixo, uma faixa horizontal de categorias funciona como âncora de navegação rápida. Cada produto aparece num card com imagem, nome, descrição, preço (com preço "de/por" riscado se estiver em promoção), selo de "Mais pedido" quando marcado, tempo de preparo, e — se for um combo — a lista do que está incluso. Produto marcado como esgotado no dia mostra um selo cinza "Esgotado" no lugar do botão de adicionar, sem chance de pedir.
 
-Categorias e produtos vêm direto de `categories`/`products` filtrados pelo `restaurantId` da mesa (`useMenu`), agrupados por categoria — os mesmos dados que o dono cadastra em `restaurante/Cardápio`, sem etapa de sincronização. Produtos inativos (`active = false`) nunca aparecem pro cliente.
+### Personalizando um item
 
-### Carrinho
+Produtos simples ganham um botão de +/− direto no card. Produtos que exigem alguma escolha (adicional, meio a meio, "escolha seu X" de um combo, ou ingrediente removível) abrem uma folha de personalização com, nesta ordem:
 
-100% client-side até a confirmação — nenhuma escrita no banco enquanto o cliente está só montando o pedido. Persistido em `localStorage` com chave por mesa (`sigma:cart:<tableId>`), porque o login (próximo passo) faz um redirect de página inteira e o carrinho em memória se perderia nessa ida e volta.
+- **Meio a meio** (quando a categoria permite): metade de um sabor, metade de outro produto da mesma categoria — o preço final é calculado pela regra da categoria (o mais caro dos dois, ou a média).
+- **Grupos de escolha de combo** ("escolha seu hambúrguer"): uma opção obrigatória por grupo, sem alterar o preço.
+- **Grupos de adicionais**: com ou sem quantidade por adicional, marcados como obrigatórios quando o restaurante exige pelo menos um.
+- **Remover ingredientes**: toggle por ingrediente, sem efeito no preço.
 
-### Confirmar pedido — login só no fim
+O botão de confirmar só libera quando toda escolha obrigatória foi feita — se faltar algo, aparece qual grupo ainda precisa de seleção.
 
-O cliente navega e monta o carrinho **sem login**. Só ao clicar "Confirmar pedido":
+### Carrinho e confirmação — sem tela de login
 
-- Se não há sessão: salva uma flag (`sigma:pending-order:<tableId>`) e dispara `supabase.auth.signInWithOAuth({ provider: "google", redirectTo: <mesma URL da mesa> })`. Ao voltar do Google, a mesa é resolvida de novo pela URL, o carrinho volta do `localStorage`, e o pedido é enviado automaticamente (a flag pendente é detectada no carregamento da página).
-- Se já há sessão: envia direto.
+O carrinho é 100% local (guardado por restaurante) até o cliente tocar em "Confirmar pedido". Ali o cliente só digita o **nome** e o **número da mesa** — texto livre, sem cadastro. Ao confirmar:
 
-Não existe tela de cadastro separada — o próprio login do Google serve pra primeira vez e pra retorno, e o trigger `handle_new_user` já cria o `profile` `customer` automaticamente.
+1. O app confere se algum preço mudou desde que o item entrou no carrinho (reconsulta o banco). Se mudou, ou se algum produto saiu do ar, mostra um aviso com o que mudou antes de deixar enviar — o cliente decide se revê o carrinho ou segue com os valores atualizados.
+2. Se está tudo certo, o app garante uma sessão via **login anônimo** do Supabase (`signInAnonymously`), sem nenhuma tela de login aparecer — é só um jeito de o pedido ter um `customer_id` válido pro backend aceitar. (Chegou-se a tentar login por Google antes disso, mas o provedor nunca foi de fato habilitado no projeto; login anônimo resolveu sem fricção nenhuma pro cliente.)
+3. O pedido é enviado pra Edge Function `place-dine-in-order`.
+4. Sucesso mostra uma tela cheia de confirmação ("Pedido enviado!"); falha mostra o erro dentro do próprio carrinho, que continua aberto pra tentar de novo.
+
+Não existe conta de cliente, histórico de pedidos anteriores nem tela de perfil — o pedido é "indexado" só pelo nome e mesa que a pessoa digitou naquela hora.
 
 ### Envio do pedido — Edge Function `place-dine-in-order`
 
-O carrinho nunca vira `INSERT` direto do navegador, por dois motivos: `table_sessions` só é gravável por staff/admin via RLS, e o preço **nunca pode vir do cliente** (um preço adulterado no payload precisa ser ignorado). A function, rodando com a service role:
+O carrinho nunca vira `INSERT` direto do navegador — o preço **nunca pode vir do cliente**. A function, rodando com a service role:
 
-1. Recebe `{ table_id, items: [{ product_id, quantity }] }`.
-2. Confere que cada `product_id` pertence de fato ao restaurante da mesa e está ativo — IDs forjados ou de outro tenant são rejeitados (`400`, lista de IDs inválidos).
-3. Recalcula `unit_price` a partir de `products.price` no banco, ignorando qualquer preço enviado no corpo da requisição.
-4. Abre uma comanda (`table_sessions`) ou reaproveita a já aberta daquela mesa — um índice único parcial (`table_sessions_one_open_per_table`, só onde `status = 'open'`) garante que dois pedidos quase simultâneos não criem duas comandas; a function trata o conflito de unicidade (`23505`) buscando a sessão existente em vez de falhar.
-5. Grava `orders` (`order_type: 'dine_in'`, `status: 'received'`, `payment_status: 'pending'`) e os `order_items`.
-6. Atualiza `restaurants.last_order_at`.
+1. Recebe o pedido inteiro: produto, quantidade, adicionais, sabor de meio a meio, escolhas de combo e ingredientes removidos.
+2. Recalcula cada preço a partir do banco (produto, adicional, meio a meio pela mesma fórmula do frontend, validade de cada escolha de combo e de cada ingrediente removível) — nada do que o cliente mandou é usado pra cobrar.
+3. Grava `orders` (`order_type: 'dine_in'`, `status: 'received'`, `payment_status: 'pending'`) e todos os relacionamentos de item.
 
-Exige um JWT válido (`verify_jwt: true`) — só usuário autenticado chega até aqui, reforçando a regra "login só na confirmação".
+Exige um JWT válido (`verify_jwt: true`) — o login anônimo do passo anterior é justamente pra isso. Essa mesma function também é o caminho usado pela equipe do restaurante pra lançar pedidos manuais de retirada e entrega (ver seção 2) — hoje só o cardápio público de mesa usa esse fluxo de ponta a ponta; retirada e entrega feitas pelo próprio cliente ainda não existem no cardápio público.
 
 ---
 
@@ -68,35 +70,50 @@ Onde o dono/equipe do restaurante gerencia o próprio negócio. Todo acesso é p
 
 ### Entrada — Cadastro, Login, Bem-vindo
 
-O restaurante nunca se cadastra sozinho do zero: o admin cria o tenant e gera um `invite_token`. O dono recebe o link, abre `/cadastro`, e o `check-invite` (function pública) valida o token sem expor dados do restaurante. Ao escolher e-mail/senha, `complete-invite` cria a conta e o `handle_new_user` já vincula o `profile` ao restaurante certo, numa única operação atômica — não passa pelo caminho de `UPDATE` que o trigger anti-escalação bloquearia. Depois do cadastro, `/bem-vindo` dá as boas-vindas antes de cair no painel de verdade. `/login` é e-mail/senha padrão, redireciona pra `/dashboard`.
+O restaurante nunca se cadastra sozinho do zero: o admin cria o tenant e gera um `invite_token`. O dono recebe o link, abre `/cadastro`, e o `check-invite` (function pública) valida o token sem expor dados do restaurante — link inválido ou expirado mostra um aviso e nenhum formulário. Token válido libera um formulário simples (e-mail, senha, confirmar senha); `complete-invite` cria a conta e o `handle_new_user` já vincula o `profile` ao restaurante certo numa única operação atômica. Depois do cadastro, `/bem-vindo` dá as boas-vindas uma única vez (não é um checklist de onboarding persistente) antes de a pessoa navegar pro painel de verdade pelo menu. `/login` é e-mail/senha padrão, redireciona pra `/dashboard`.
 
 ### Dashboard (`/dashboard`)
 
-KPIs do dia, sempre "hoje" (não dependem de filtro de período):
+Dois seletores de período independentes: um pros KPIs (Hoje / Ontem / 7 dias / Este mês / Personalizado, com intervalo de datas) e outro só pro gráfico de vendas por dia (Semana / Mês).
 
-- **Faturamento do dia** — soma de `orders.total` de hoje, excluindo cancelados.
-- **Ticket médio do dia** — faturamento do dia ÷ número de pedidos não cancelados.
-- **Pedidos totais / Pendentes / Entregues** — contagem por `orders.status` (pendente = `received`/`preparing`/`ready`; entregue = `completed`).
-- **Canal do pedido** — três cards contando `order_type`: Mesa (`dine_in`), Delivery, Retirada (`pickup`). Hoje só o canal Mesa tem fluxo de pedido implementado ponta a ponta (item 1 acima); Delivery/Retirada existem no schema e nos cards, prontos pra quando esses canais forem construídos.
-
-Abaixo, um gráfico de vendas por dia com seletor **Semana/Mês**, desenhado em SVG medindo o container real (via `ResizeObserver`) — sem distorção de proporção — com linhas de grade, valores no eixo Y e rótulos de dia da semana (visão semana) ou dia do mês (visão mês) embaixo de cada barra. Junto: unidades vendidas no período, e dois cards de **CMV** e **Lucro/Prejuízo** marcados como "requer ficha técnica" — decisão consciente de não inventar números sem um modelo de custo de insumos ainda cadastrado.
+- **KPIs**: Faturamento, Ticket médio, Pedidos totais, Pendentes, Entregues, Cancelados.
+- **Canais**: três cards (Mesa / Delivery / Retirada), cada um com pedidos, faturamento e ticket médio do canal.
+- **Gráfico de vendas por dia**: barra por dia desenhada em SVG próprio (sem lib de gráfico), com tooltip ao passar o mouse, eixo com valores em R$ e rótulos por dia da semana ou dia do mês conforme o período escolhido.
+- **Produtos mais vendidos**: top 5 por quantidade no período, com barra proporcional.
+- **Horário de pico**: 24 barras, uma por hora do dia, com o pico destacado.
+- **Unidades vendidas / CMV / Lucro-Prejuízo**: CMV e Lucro **são reais hoje**, não um placeholder — vêm de uma ficha técnica por produto (ver Cardápio → Produto abaixo). O CMV do período é a soma, por item vendido, de quantidade × custo de cada ingrediente da receita daquele produto; Lucro é faturamento menos esse CMV. Produto sem ficha técnica cadastrada simplesmente entra com CMV zero, sem aviso na tela — a precisão desse número depende de o dono ter preenchido a receita de cada prato.
 
 ### Cardápio (`/cardapio`)
 
-CRUD completo de categorias e produtos:
+Cinco abas: **Produtos**, **Categorias**, **Simulador**, **Aparência**, **Banners** — mais um link "Ver como o cliente vê".
 
-- Categorias: criar, editar nome/imagem, reordenar (setas, persistido em `sort_order`), excluir (produtos da categoria excluída caem em "sem categoria", nunca são apagados junto).
-- Produtos: nome, descrição, preço, preço original (pra mostrar desconto), tempo de preparo, marcação "mais pedido", ativo/inativo, reordenar dentro da categoria.
-- Upload de imagem real pro Supabase Storage (bucket `menu-images`, público pra leitura), em `{restaurant_id}/{categories|products}/{uuid}.{ext}` — a policy de escrita restringe cada tenant à própria pasta (`storage.foldername(name)[1] = current_restaurant_id()`), então um dono não consegue escrever na pasta de outro restaurante mesmo manipulando a chamada direto. Trocar a imagem apaga a antiga só depois que a nova sobe com sucesso, pra nunca ficar sem imagem no meio do caminho.
+**Produtos** — busca, filtro por categoria, alternância lista/grade, reordenação por arrastar-e-soltar (desligada enquanto há busca/filtro ativo). Cada produto mostra imagem, preço (com desconto se houver), tempo de preparo, um selo "Mais pedido" que liga/desliga com um toque, um toggle Ativo/Inativo, e um toggle "Esgotado hoje" — o 86 rápido do dia a dia, sem precisar editar o produto. Duplicar um produto copia a ficha técnica junto.
 
-O que é cadastrado aqui aparece **imediatamente** no cardápio real do cliente (`/mesa/:token`) — é a mesma tabela, sem etapa de publicação.
+Abrir um produto pra editar mostra: **carrossel de imagens** (várias fotos, reordenáveis), nome, descrição, categoria, preço de venda, preço original opcional (pra mostrar "de/por"), tempo de preparo, **ficha técnica** (adiciona ingredientes com autocomplete do catálogo do restaurante — ou cadastra um novo na hora, informando quanto custou por unidade —, e calcula CMV e margem em tempo real conforme a receita é montada), **itens do combo** (composição fixa, só informativo — não some no preço), **grupos de escolha** (a mesma engrenagem de "escolha seu X" que o cliente vê), e os toggles de Ativo/Mais pedido.
 
-### Mesas (`/mesas`)
+**Categorias** — reordenação, um toggle "Permite montar meio a meio" com a regra de preço (mais caro dos dois ou média), um botão "Adicionais" que abre os grupos de adicionais daquela categoria inteira (com a opção "obrigatório" por grupo), e duplicar (copia produtos, ficha técnica e adicionais junto).
 
-Onde a comanda aberta por um cliente (via QR Code) chega pro garçom:
+**Simulador** — ferramenta de "e se": monta um produto hipotético com ficha técnica e preço-alvo, mostra CMV/lucro/margem antes de esse produto sequer existir no cardápio. "Adicionar ao cardápio" leva o rascunho direto pro formulário de produto de verdade.
 
-- Lista as `table_sessions` com `status = 'open'` do restaurante, com o nome da mesa, todos os itens pedidos (de todos os pedidos daquela sessão) e o total.
-- Botão **"Fechar conta"**: marca todos os pedidos da sessão como `completed`/`paid` e fecha a comanda (`table_sessions.status = 'closed'`, `closed_at`, `total_charged`).
+**Aparência** — nome exibido ao cliente, logo, favicon, cor principal (paleta de predefinidas + seletor livre). É o que alimenta o `restaurant_branding` que a seção 1 descreve.
+
+**Banners** — CRUD do carrossel de promoções do cardápio público: imagem, título, subtítulo, texto do botão, categoria de destino opcional, ativo/inativo, reordenação. Sem nenhum banner ativo, o carrossel simplesmente não aparece pro cliente.
+
+O que é cadastrado aqui aparece **imediatamente** no cardápio real do cliente — é a mesma tabela, sem etapa de publicação.
+
+### Pedidos (`/pedidos`)
+
+Board Kanban em tempo real: Recebido → Em preparo → Pronto → Entregue, mais uma coluna Cancelado. Cada coluna mostra a contagem e o total em R$; filtro por canal (Mesa/Retirada/Entrega) e busca por cliente/mesa.
+
+Cada card mostra o canal, há quanto tempo o pedido chegou, o cliente, onde entregar (mesa/código de retirada/endereço), os itens (com adicionais, escolhas de combo e ingredientes removidos destacados), o total, e quatro ações: avançar status, ver detalhes, reimprimir a comanda, cancelar. Um pedido parado no mesmo status por 15 minutos ganha um aviso âmbar; por 30 minutos, vermelho — sem precisar abrir nada pra notar que algo travou.
+
+**"Novo pedido"** abre um formulário pra equipe lançar um pedido manual (telefone, balcão) — hoje só produto + quantidade, sem adicional/combo/meio a meio. O tipo (Mesa/Retirada/Entrega) muda os campos exigidos; retirada gera um código mostrado em tela cheia pra passar pro cliente.
+
+O ícone de detalhes abre um painel onde a equipe pode adicionar/remover item, editar desconto e taxa de serviço (sempre recalculados do zero a partir do banco, nunca incrementalmente — via a Edge Function `staff-edit-order`), registrar a forma de pagamento (dinheiro/cartão/PIX) e escrever uma observação do pedido. Cada pedido novo toca um som diferente conforme o canal.
+
+### Impressora (`/impressora`)
+
+Configuração do **agente de impressão local** (ver seção 5): detecta se o agente está rodando na máquina, oferece o instalador pra baixar direto da tela, permite escolher a impressora/largura do papel/número de cópias, ligar a impressão automática, e imprimir uma página de teste.
 
 ---
 
@@ -106,28 +123,28 @@ Onde a Sigma gerencia a carteira de restaurantes clientes. Só `role = 'admin'` 
 
 ### Dashboard (`/dashboard`)
 
-Visão agregada de **todos** os tenants: quantos restaurantes ativos/total, unidades vendidas, faturamento total (só pedidos pagos), e ranking dos top 5 restaurantes por faturamento.
+Duas fileiras de cards, sem gráfico — tudo em números e lista. A primeira: quantos restaurantes ativos/total, unidades vendidas, faturamento total (só pedidos pagos). A segunda: quantos restaurantes em cada estágio do funil (Onboarding / Ativo / Suporte-Risco / Inativo) — um resumo numérico do Kanban direto no Dashboard. Abaixo, o ranking dos top 5 restaurantes por faturamento.
 
 ### Kanban (`/kanban`)
 
-Pipeline de onboarding em colunas — `onboarding → active → suspended → cancelled`. Mover um restaurante de coluna chama a Edge Function `admin-set-account-status`, que atualiza o status e grava uma linha em `admin_action_log`.
+Pipeline de onboarding em colunas — Onboarding → Ativo → Suporte/Risco → Inativo. Não é arrastar-e-soltar: cada card tem um botão "Mover para {próximo estágio}", que só avança pro próximo da sequência fixa (voltar ou pular estágio não dá pra fazer por aqui — só pela tabela de Restaurantes, ver abaixo). Mover chama a Edge Function `admin-set-account-status`, que atualiza o status e grava uma linha em `admin_action_log`.
 
 ### Restaurantes (`/restaurantes`)
 
-Listagem com busca (nome/contato/e-mail) e:
+Listagem com busca (nome/contato/e-mail), coluna de "última atividade" (data do último pedido do tenant), e uma coluna de status que é um `<select>` editável — diferente do Kanban, aqui dá pra pular pra qualquer estágio direto, não só avançar. Ações:
 
-- **Novo restaurante (convite)** — `admin-create-restaurant` sem senha: cria o tenant com um `invite_token` e devolve o link pra agência copiar e mandar pro dono. Onboarding sem fricção — a agência não precisa saber a senha de ninguém.
-- **Adicionar manualmente** — mesma function, mas com `owner_password`: cria o tenant e a conta do dono já prontos, pra quando a agência já tem os dados na mão (é assim que a conta de demonstração existe).
+- **Novo restaurante (convite)** — `admin-create-restaurant` sem senha: cria o tenant com um `invite_token` e devolve o link pra agência copiar e mandar pro dono. Onboarding sem fricção — a agência não precisa saber a senha de ninguém. Atalho disponível também na barra lateral, sempre visível.
+- **Adicionar manualmente** — mesma function, mas com senha do dono: cria o tenant e a conta já prontos, pra quando a agência já tem os dados na mão (é assim que a conta de demonstração existe).
 - **Editar dados do restaurante** — `UPDATE` direto, coberto por RLS de admin.
 - **Editar dono** — `admin-manage-owner` (ver/editar e-mail, nome, telefone) e um botão que gera link de redefinição de senha via `admin-reset-password` (o link precisa ser copiado e enviado manualmente — o projeto ainda não tem SMTP configurado pra e-mail transacional automático).
 
 ### Pedidos (`/pedidos`)
 
-Visão somente-leitura de todos os pedidos de todos os restaurantes, com busca por nome do tenant e filtro por status. Deliberadamente sem edição — mudar o status de um pedido é responsabilidade do restaurante, não da agência.
+Visão somente-leitura dos 200 pedidos mais recentes de todos os restaurantes, com busca por nome do tenant e filtro por status. Sem filtro de período. Deliberadamente sem edição — mudar o status de um pedido é responsabilidade do restaurante, não da agência.
 
 ### Auditoria (`/auditoria`)
 
-As últimas 200 linhas de `admin_action_log` (com o nome do restaurante já resolvido via join, não o UUID cru), com busca por ação ou restaurante e detalhes formatados como "chave: valor" em vez de JSON cru. Toda mutação privilegiada feita por qualquer Edge Function `admin-*` grava aqui — é o rastro de tudo que a agência faz nas contas dos clientes.
+As últimas 200 linhas de `admin_action_log` (com o nome do restaurante já resolvido via join, não o UUID cru), com busca por ação ou restaurante e detalhes formatados como "chave: valor" (valores aninhados caem pra JSON cru quando não dá pra achatar). Toda mutação privilegiada feita por qualquer Edge Function `admin-*` grava aqui — é o rastro de tudo que a agência faz nas contas dos clientes.
 
 ---
 
@@ -143,24 +160,39 @@ As últimas 200 linhas de `admin_action_log` (com o nome do restaurante já reso
 | `admin-set-account-status` | admin | sim |
 | `check-invite` | público (tela de cadastro) | não |
 | `complete-invite` | público (tela de cadastro) | não |
-| `place-dine-in-order` | cliente autenticado | sim |
+| `place-dine-in-order` | cliente (login anônimo) ou equipe do restaurante | sim |
+| `staff-edit-order` | equipe do restaurante | sim |
 
-**Storage**: bucket `menu-images` (público pra leitura, escrita restrita por pasta de tenant).
+**Storage**: bucket `menu-images` (público pra leitura, escrita restrita por pasta de tenant) — guarda imagens de produto, categoria, marca (logo/favicon) e banners promocionais.
 
-**RLS**: toda tabela de negócio (`restaurants`, `categories`, `products`, `tables`, `table_sessions`, `orders`, `order_items`, `admin_action_log`) tem policies baseadas em `current_app_role()`/`current_restaurant_id()` — nunca subquery inline repetida, pra evitar policies divergentes entre tabelas.
+**RLS**: toda tabela de negócio (`restaurants`, `categories`, `products`, `addon_groups`/`addons`, `combo_items`, `combo_choice_groups`/`combo_choice_options`, `ingredients`/`product_ingredients`, `promo_banners`, `restaurant_branding`, `orders`, `order_items` e as tabelas de detalhe do item — adicionais, escolhas de combo, ingredientes removidos —, `admin_action_log`) tem policies baseadas em `current_app_role()`/`current_restaurant_id()` — nunca subquery inline repetida, pra evitar policies divergentes entre tabelas.
+
+---
+
+## 5. Agente de impressão local
+
+Comanda impressa automaticamente na cozinha, sem ninguém precisar clicar em nada — esse é o problema que o **agente de impressão** resolve, e é a quarta peça do sistema, ao lado dos três apps web. É um programa nativo (Go), sem Java, sem instalador pesado, que fica rodando no computador do restaurante e conversa com o navegador direto em `127.0.0.1`, sem passar pela internet.
+
+Pro dono do restaurante, a experiência é: baixar o instalador direto da tela **Impressora** do painel (`/impressora`), rodar uma vez, e pronto — ele aparece com um ícone na bandeja do Windows, já configurado pra abrir sozinho a cada login. Dali, é só escolher a impressora e a largura do papel.
+
+Depois de configurado, toda comanda que chega imprime sozinha — e isso funciona **em qualquer tela do painel**, não só com a tela de Pedidos aberta: o dono pode estar mexendo no Cardápio ou olhando o Dashboard que a comanda sai do mesmo jeito. Também dá pra reimprimir manualmente qualquer pedido a partir do board de Pedidos, se o papel travar ou a comanda se perder.
+
+Limitação atual, por escolha: o agente só imprime cupom térmico (ESC/POS) — não existe caminho pra imprimir PDF/A4 (relatórios, notas) nesta fase.
+
+Detalhe técnico completo (arquitetura, API, instalação, histórico das tentativas anteriores que não deram certo) está em `agente/README.md` e em `CLAUDE.md`.
 
 ---
 
 ## Fora de escopo hoje (decisão, não esquecimento)
 
-- **Retirada e Delivery** — os tipos existem no schema e nos KPIs do Dashboard, mas não têm fluxo de pedido implementado (dependem de decisão de gateway de pagamento, ainda em aberto).
-- **Gestão de mesas pela UI do restaurante** — criar/editar mesa e gerar/imprimir QR Code ainda é feito só via banco; a mesa de demonstração foi criada manualmente.
-- **Histórico de pedidos fechados** em `restaurante/Mesas` — a tela só mostra comandas abertas; não há tela de "vendas do dia" por comanda já fechada (os números agregados existem no Dashboard).
-- **Atualização em tempo real de `/mesas`** — hoje é preciso recarregar a página pra ver um pedido novo chegar; não há polling nem Supabase Realtime ligado ainda.
-- **CMV / Lucro** — precisa de um modelo de ficha técnica (custo de insumo por produto) que ainda não existe.
-- **App do garçom, KDS, comanda impressa, NFC-e** — fora do escopo desta fase do produto.
+- **Retirada e Delivery pelo próprio cliente** — o cardápio público (seção 1) só produz pedidos de mesa; retirada e entrega hoje só existem quando a equipe do restaurante lança manualmente pela tela Pedidos. Falta decidir o fluxo de pagamento antes de abrir esses canais pro cliente final.
+- **Adicional, combo e meio a meio em pedido manual** — o formulário de "Novo pedido" da equipe só aceita produto + quantidade por enquanto; essas personalizações só existem no cardápio público.
+- **Gateway de pagamento online** — nenhum pedido é cobrado automaticamente no ato; o pagamento é sempre registrado manualmente pela equipe (dinheiro/cartão/PIX) depois que o pedido chega.
+- **E-mail transacional automático** — convite de restaurante e redefinição de senha geram um link que a agência precisa copiar e enviar na mão; não há SMTP configurado.
+- **Impressão de PDF/A4** — o agente de impressão local (seção 5) só imprime cupom térmico ESC/POS.
+- **App do garçom dedicado, KDS, NFC-e** — fora do escopo desta fase do produto.
 
 ## Login de demonstração
 
 - **Admin**: acesso interno da agência (painel `admin/`).
-- **Restaurante demo**: `agenciasigmaa+demo@gmail.com` / `SigmaDemo2026!`, restaurante "Restaurante Demo Sigma", status `active`, com cardápio populado (categorias e produtos com fotos reais enviadas pro Storage) e mesa de teste com QR Code funcional em `/mesa/:token`.
+- **Restaurante demo**: `agenciasigmaa+demo@gmail.com` / `SigmaDemo2026!`, restaurante "Restaurante Demo Sigma", status `active`, com cardápio populado (categorias e produtos com fotos reais enviadas pro Storage).
