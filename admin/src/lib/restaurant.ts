@@ -3,6 +3,7 @@ export type RestaurantStatus = "onboarding" | "active" | "suspended" | "cancelle
 export type Restaurant = {
   id: string;
   name: string;
+  slug: string;
   status: RestaurantStatus;
   contact_name: string | null;
   contact_email: string | null;

@@ -2,59 +2,85 @@ import { useEffect, useMemo, useState } from "react";
 import { MapPin, Plus, Trash2, X } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { describeFunctionError } from "../lib/functionError";
-import { itemTotal, orderLocationLabel, type IncomingOrder, type PaymentMethod } from "../lib/orders";
+import { useAddonGroups } from "../lib/addons";
+import type { HalfAndHalfPricingMode } from "../lib/halfAndHalfPricing";
+import { itemTotal, orderLocationLabel, type IncomingOrder, type SplitPayment } from "../lib/orders";
+import { useRemovableIngredients } from "../lib/removableIngredients";
+import type { Waiter } from "../lib/waiters";
+import type { DeliveryDriver } from "../lib/deliveryDrivers";
+import { DeliveryDriverAssignSelect } from "./DeliveryDriverAssignSelect";
+import { FecharContaModal } from "./FecharContaModal";
+import { ItemCustomizeModal } from "./ItemCustomizeModal";
+import { WaiterAssignSelect } from "./WaiterAssignSelect";
 
 const currency = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-const PAYMENT_LABEL: Record<PaymentMethod, string> = { cash: "Dinheiro", card: "Cartão", pix: "PIX" };
-
 type PickerProduct = { id: string; name: string; price: number; category_id: string | null };
-type PickerCategory = { id: string; name: string };
+type PickerCategory = {
+  id: string;
+  name: string;
+  allow_half_and_half: boolean;
+  half_and_half_pricing: HalfAndHalfPricingMode;
+};
 
-// Edição de pedido já lançado — adicionar/remover item, observações e
-// financeiro (desconto/taxa de serviço/pagamento). Adição/remoção de item e
-// desconto/taxa passam pela Edge Function staff-edit-order, que recalcula
-// subtotal/total sempre a partir do banco (nunca confia em valor do client).
-// Registrar pagamento é a única mutação que não recalcula preço, por isso
-// vai direto pelo update (mesma policy orders_staff_update do avançar status).
+// Etapa 1 do atendimento: pedido em andamento — status, itens, adicionais e
+// observação. Desconto, taxa de serviço, divisão de conta e pagamento vivem
+// só no fluxo de fechamento (FecharContaModal, aberto pelo botão "Fechar
+// conta" abaixo) — de propósito, pra essa tela não acumular tudo de uma vez.
+// Adição/remoção de item passa pela Edge Function staff-edit-order, que
+// recalcula subtotal/total sempre a partir do banco. Aberto tanto de
+// /pedidos (balcão pode fechar a conta direto) quanto da aba Garçom.
 export function OrderDetailModal({
   order,
   restaurantId,
   onClose,
-  onRegisterPayment,
+  onConfigureSplit,
+  onMarkSplitPaid,
+  onVoidSplit,
+  waiters,
+  onAssignWaiter,
+  drivers,
+  onAssignDeliveryDriver,
 }: {
   order: IncomingOrder;
   restaurantId: string;
   onClose: () => void;
-  onRegisterPayment: (orderId: string, method: PaymentMethod) => Promise<void>;
+  onConfigureSplit: (orderId: string, payload: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
+  onMarkSplitPaid: (orderId: string, splitId: string | null, payments: SplitPayment[]) => Promise<{ ok: boolean; error?: string }>;
+  onVoidSplit: (orderId: string, splitId: string) => Promise<{ ok: boolean; error?: string }>;
+  waiters: Waiter[];
+  onAssignWaiter: (orderId: string, waiterId: string) => Promise<{ ok: boolean; error?: string }>;
+  drivers?: DeliveryDriver[];
+  onAssignDeliveryDriver?: (orderId: string, driverId: string) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const [categories, setCategories] = useState<PickerCategory[]>([]);
   const [products, setProducts] = useState<PickerProduct[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
   const [showPicker, setShowPicker] = useState(false);
+  const [showFecharConta, setShowFecharConta] = useState(false);
+  const [pendingAddonProduct, setPendingAddonProduct] = useState<PickerProduct | null>(null);
   const [notes, setNotes] = useState(order.notes ?? "");
-  const [discountInput, setDiscountInput] = useState(String(order.discount_amount));
-  const [serviceChargeInput, setServiceChargeInput] = useState(String(order.service_charge_amount));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const { groupsForCategory } = useAddonGroups(restaurantId);
+  const { forProduct: removableIngredientsForProduct } = useRemovableIngredients(restaurantId);
+
+  // Editar item muda o total, o que quebraria uma divisão de conta com parte
+  // já paga — o servidor (staff-edit-order) já bloqueia isso, aqui é só o
+  // espelho visual pra não deixar o garçom tentar uma ação que vai ser
+  // rejeitada.
+  const hasPaidSplit = order.payment_splits.some((s) => s.status === "paid");
 
   useEffect(() => {
     setNotes(order.notes ?? "");
   }, [order.notes]);
 
   useEffect(() => {
-    setDiscountInput(String(order.discount_amount));
-  }, [order.discount_amount]);
-
-  useEffect(() => {
-    setServiceChargeInput(String(order.service_charge_amount));
-  }, [order.service_charge_amount]);
-
-  useEffect(() => {
     if (!showPicker) return;
     supabase
       .from("categories")
-      .select("id, name")
+      .select("id, name, allow_half_and_half, half_and_half_pricing")
       .eq("restaurant_id", restaurantId)
       .order("sort_order")
       .then(({ data }) => setCategories(data ?? []));
@@ -73,6 +99,17 @@ export function OrderDetailModal({
     [products, activeCategory],
   );
 
+  // Categoria com meio a meio habilitado (hoje só Pizza) — opções são os
+  // outros produtos da MESMA categoria, preço final sempre recalculado no
+  // servidor a partir do modo (maior valor/média) da categoria.
+  function halfAndHalfFor(product: PickerProduct) {
+    const category = categories.find((c) => c.id === product.category_id);
+    if (!category?.allow_half_and_half) return undefined;
+    const options = products.filter((p) => p.category_id === product.category_id && p.id !== product.id);
+    if (options.length === 0) return undefined;
+    return { pricingMode: category.half_and_half_pricing, options };
+  }
+
   async function callEdit(body: Record<string, unknown>) {
     setBusy(true);
     setError(null);
@@ -84,9 +121,34 @@ export function OrderDetailModal({
     return !fnError;
   }
 
-  async function handleAddProduct(product: PickerProduct) {
-    const ok = await callEdit({ action: "add_item", product_id: product.id, quantity: 1 });
-    if (ok) setShowPicker(false);
+  function handleAddProduct(product: PickerProduct) {
+    // Sempre abre o personalizador — mesmo produto sem adicional/ingrediente
+    // removível cadastrado ainda ganha o campo de observação livre. Antes só
+    // dava pra "adicionar o produto" puro nesse caminho, sem jeito nenhum de
+    // anotar algo na comanda.
+    setPendingAddonProduct(product);
+  }
+
+  async function handleConfirmAddons(customization: {
+    addons: { addon_id: string; quantity: number }[];
+    removedIngredientIds: string[];
+    notes: string;
+    halfFlavorProductId: string | null;
+  }) {
+    if (!pendingAddonProduct) return;
+    const ok = await callEdit({
+      action: "add_item",
+      product_id: pendingAddonProduct.id,
+      quantity: 1,
+      addons: customization.addons,
+      removed_ingredient_ids: customization.removedIngredientIds,
+      ...(customization.notes ? { notes: customization.notes } : {}),
+      ...(customization.halfFlavorProductId ? { half_flavor_product_id: customization.halfFlavorProductId } : {}),
+    });
+    if (ok) {
+      setPendingAddonProduct(null);
+      setShowPicker(false);
+    }
   }
 
   async function handleRemoveItem(orderItemId: string) {
@@ -97,25 +159,8 @@ export function OrderDetailModal({
     await callEdit({ action: "set_notes", notes });
   }
 
-  async function handleSaveDiscount() {
-    const value = Number(discountInput.replace(",", "."));
-    if (!Number.isFinite(value) || value < 0) return;
-    await callEdit({ action: "set_discount", discount_amount: value });
-  }
-
-  async function handleSaveServiceCharge() {
-    const value = Number(serviceChargeInput.replace(",", "."));
-    if (!Number.isFinite(value) || value < 0) return;
-    await callEdit({ action: "set_service_charge", service_charge_amount: value });
-  }
-
-  async function handleRegisterPayment(method: PaymentMethod) {
-    setBusy(true);
-    await onRegisterPayment(order.id, method);
-    setBusy(false);
-  }
-
   return (
+    <>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl bg-card shadow-elevated">
         <div className="flex items-center justify-between border-b border-border p-4">
@@ -126,9 +171,25 @@ export function OrderDetailModal({
             </p>
             {order.order_type === "delivery" && order.delivery_address && (
               <p className="mt-1 flex items-start gap-1 text-xs font-medium text-foreground">
-                <MapPin className="mt-0.5 h-3 w-3 shrink-0" aria-hidden /> {order.delivery_address.text}
+                <MapPin className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+                {order.delivery_address.text}
+                {order.neighborhood_name && ` — ${order.neighborhood_name}`}
               </p>
             )}
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <WaiterAssignSelect
+                waiters={waiters}
+                waiterId={order.waiter_id}
+                onAssign={(waiterId) => onAssignWaiter(order.id, waiterId)}
+              />
+              {order.order_type === "delivery" && drivers && onAssignDeliveryDriver && (
+                <DeliveryDriverAssignSelect
+                  drivers={drivers}
+                  driverId={order.delivery_driver_id}
+                  onAssign={(driverId) => onAssignDeliveryDriver(order.id, driverId)}
+                />
+              )}
+            </div>
           </div>
           <button onClick={onClose} aria-label="Fechar" className="rounded-full p-1.5 text-muted-foreground hover:bg-muted">
             <X className="h-4 w-4" aria-hidden />
@@ -166,7 +227,7 @@ export function OrderDetailModal({
                     <span className="font-bold">{currency(itemTotal(item))}</span>
                     <button
                       onClick={() => handleRemoveItem(item.id)}
-                      disabled={busy}
+                      disabled={busy || hasPaidSplit}
                       aria-label="Remover item"
                       className="rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-40"
                     >
@@ -178,10 +239,17 @@ export function OrderDetailModal({
             ))}
           </div>
 
+          {hasPaidSplit && (
+            <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+              Pedido tem partes da conta já pagas — desfaça o pagamento pra editar itens, desconto ou taxa de serviço.
+            </p>
+          )}
+
           {!showPicker ? (
             <button
               onClick={() => setShowPicker(true)}
-              className="mb-4 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-xs font-bold text-muted-foreground hover:border-primary hover:text-primary"
+              disabled={hasPaidSplit}
+              className="mb-4 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-xs font-bold text-muted-foreground hover:border-primary hover:text-primary disabled:opacity-40"
             >
               <Plus className="h-3.5 w-3.5" aria-hidden /> Adicionar item
             </button>
@@ -228,92 +296,30 @@ export function OrderDetailModal({
           )}
 
           <div className="mb-4 rounded-xl border border-border p-3">
-            <div className="mb-2 space-y-1 text-sm">
-              <div className="flex items-center justify-between text-muted-foreground">
-                <span>Subtotal</span>
-                <span>{currency(order.subtotal)}</span>
-              </div>
-              <div className="flex items-center justify-between text-muted-foreground">
-                <span>Desconto</span>
-                <span>-{currency(order.discount_amount)}</span>
-              </div>
-              <div className="flex items-center justify-between text-muted-foreground">
-                <span>Taxa de serviço</span>
-                <span>+{currency(order.service_charge_amount)}</span>
-              </div>
-              <div className="flex items-center justify-between border-t border-border pt-1 font-bold">
-                <span>Total</span>
-                <span>{currency(order.total)}</span>
-              </div>
+            <div className="mb-2 flex items-center justify-between text-sm font-bold">
+              <span>Total</span>
+              <span>{currency(order.total)}</span>
             </div>
-
-            <div className="mb-2 flex gap-2">
-              <div className="flex-1">
-                <label className="mb-1 block text-[11px] font-semibold text-muted-foreground">Desconto (R$)</label>
-                <div className="flex gap-1">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={discountInput}
-                    onChange={(e) => setDiscountInput(e.target.value)}
-                    className="w-full rounded-lg border border-border px-2 py-1.5 text-sm"
-                  />
-                  <button
-                    onClick={handleSaveDiscount}
-                    disabled={busy}
-                    className="shrink-0 rounded-lg border border-border px-2 text-xs font-bold hover:bg-muted disabled:opacity-40"
-                  >
-                    OK
-                  </button>
-                </div>
-              </div>
-              <div className="flex-1">
-                <label className="mb-1 block text-[11px] font-semibold text-muted-foreground">Taxa de serviço (R$)</label>
-                <div className="flex gap-1">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={serviceChargeInput}
-                    onChange={(e) => setServiceChargeInput(e.target.value)}
-                    className="w-full rounded-lg border border-border px-2 py-1.5 text-sm"
-                  />
-                  <button
-                    onClick={() => setServiceChargeInput((Math.round(order.subtotal * 10) / 100).toFixed(2))}
-                    disabled={busy}
-                    className="shrink-0 rounded-lg border border-border px-2 text-xs font-bold hover:bg-muted disabled:opacity-40"
-                  >
-                    10%
-                  </button>
-                  <button
-                    onClick={handleSaveServiceCharge}
-                    disabled={busy}
-                    className="shrink-0 rounded-lg border border-border px-2 text-xs font-bold hover:bg-muted disabled:opacity-40"
-                  >
-                    OK
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <label className="mb-1 block text-[11px] font-semibold text-muted-foreground">
-              Pagamento {order.payment_status === "paid" ? "· pago" : "· pendente"}
-            </label>
-            <div className="flex gap-1.5">
-              {(Object.keys(PAYMENT_LABEL) as PaymentMethod[]).map((method) => (
+            {order.payment_status === "paid" ? (
+              <div className="flex items-center justify-between">
+                <span className="rounded-full bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary">
+                  Conta fechada · Pago
+                </span>
                 <button
-                  key={method}
-                  onClick={() => handleRegisterPayment(method)}
-                  disabled={busy}
-                  className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-bold disabled:opacity-40 ${
-                    order.payment_method === method
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border hover:bg-muted"
-                  }`}
+                  onClick={() => setShowFecharConta(true)}
+                  className="text-xs font-bold text-muted-foreground hover:text-primary"
                 >
-                  {PAYMENT_LABEL[method]}
+                  Ver pagamento
                 </button>
-              ))}
-            </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowFecharConta(true)}
+                className="w-full rounded-full bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground hover:brightness-105"
+              >
+                Fechar conta
+              </button>
+            )}
           </div>
 
           <label className="mb-1 block text-xs font-semibold text-muted-foreground">Observação do pedido</label>
@@ -336,5 +342,28 @@ export function OrderDetailModal({
         </div>
       </div>
     </div>
+
+    {showFecharConta && (
+      <FecharContaModal
+        order={order}
+        onClose={() => setShowFecharConta(false)}
+        onConfigureSplit={onConfigureSplit}
+        onMarkPaid={onMarkSplitPaid}
+        onVoidSplit={onVoidSplit}
+      />
+    )}
+
+    {pendingAddonProduct && (
+      <ItemCustomizeModal
+        productName={pendingAddonProduct.name}
+        productPrice={pendingAddonProduct.price}
+        groups={groupsForCategory(pendingAddonProduct.category_id)}
+        removableIngredients={removableIngredientsForProduct(pendingAddonProduct.id)}
+        halfAndHalf={halfAndHalfFor(pendingAddonProduct)}
+        onClose={() => setPendingAddonProduct(null)}
+        onConfirm={handleConfirmAddons}
+      />
+    )}
+    </>
   );
 }

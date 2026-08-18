@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { ClipboardList, LayoutDashboard, LayoutGrid, LogOut, Plus, Receipt, Store } from "lucide-react";
+import { ClipboardList, LayoutDashboard, LayoutGrid, LogOut, Plus, Receipt, Store, Users } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import sigmaLogo from "../assets/sigma-logo.png";
 import { NewRestaurantModal } from "./NewRestaurantModal";
@@ -10,6 +10,7 @@ const navItems = [
   { to: "/kanban", label: "Kanban", icon: LayoutGrid },
   { to: "/restaurantes", label: "Restaurantes", icon: Store },
   { to: "/pedidos", label: "Pedidos", icon: Receipt },
+  { to: "/clientes", label: "Clientes", icon: Users },
   { to: "/auditoria", label: "Auditoria", icon: ClipboardList },
 ];
 

@@ -15,9 +15,28 @@ export type Ingredient = {
 
 // Uma linha no editor do produto: aponta pra um ingrediente já cadastrado,
 // ou carrega os dados pra criar um novo ingrediente na hora de salvar.
+// `removable` controla se o cliente da loja pode tirar esse ingrediente do
+// pedido — default true (comportamento de sempre), mas dá pra travar itens
+// que não fazem sentido sem (ex. o pão de um hambúrguer).
 export type ProductIngredientLine =
-  | { kind: "existing"; ingredient_id: string; name: string; unit: Unit; cost_per_unit: number; quantity_used: number }
-  | { kind: "new"; name: string; unit: Unit; package_quantity: number; package_price: number; quantity_used: number };
+  | {
+      kind: "existing";
+      ingredient_id: string;
+      name: string;
+      unit: Unit;
+      cost_per_unit: number;
+      quantity_used: number;
+      removable: boolean;
+    }
+  | {
+      kind: "new";
+      name: string;
+      unit: Unit;
+      package_quantity: number;
+      package_price: number;
+      quantity_used: number;
+      removable: boolean;
+    };
 
 export function lineCostPerUnit(line: ProductIngredientLine): number {
   return line.kind === "existing" ? line.cost_per_unit : line.package_price / line.package_quantity;
@@ -65,11 +84,11 @@ export async function saveProductIngredients(
   productId: string,
   lines: ProductIngredientLine[],
 ): Promise<void> {
-  const resolvedLines: { ingredient_id: string; quantity_used: number }[] = [];
+  const resolvedLines: { ingredient_id: string; quantity_used: number; removable: boolean }[] = [];
 
   for (const line of lines) {
     if (line.kind === "existing") {
-      resolvedLines.push({ ingredient_id: line.ingredient_id, quantity_used: line.quantity_used });
+      resolvedLines.push({ ingredient_id: line.ingredient_id, quantity_used: line.quantity_used, removable: line.removable });
       continue;
     }
     const { data, error } = await supabase
@@ -84,7 +103,7 @@ export async function saveProductIngredients(
       .select("id")
       .single();
     if (error) throw error;
-    resolvedLines.push({ ingredient_id: data.id, quantity_used: line.quantity_used });
+    resolvedLines.push({ ingredient_id: data.id, quantity_used: line.quantity_used, removable: line.removable });
   }
 
   await supabase.from("product_ingredients").delete().eq("product_id", productId);
@@ -99,10 +118,16 @@ export async function saveProductIngredients(
 export async function loadProductIngredientLines(productId: string): Promise<ProductIngredientLine[]> {
   const { data } = await supabase
     .from("product_ingredients")
-    .select("quantity_used, ingredients(id, name, unit, cost_per_unit)")
+    .select("quantity_used, removable, ingredients(id, name, unit, cost_per_unit)")
     .eq("product_id", productId);
 
-  return ((data ?? []) as unknown as { quantity_used: number; ingredients: { id: string; name: string; unit: Unit; cost_per_unit: number } }[]).map(
+  return (
+    (data ?? []) as unknown as {
+      quantity_used: number;
+      removable: boolean;
+      ingredients: { id: string; name: string; unit: Unit; cost_per_unit: number };
+    }[]
+  ).map(
     (row) => ({
       kind: "existing",
       ingredient_id: row.ingredients.id,
@@ -110,6 +135,7 @@ export async function loadProductIngredientLines(productId: string): Promise<Pro
       unit: row.ingredients.unit,
       cost_per_unit: Number(row.ingredients.cost_per_unit),
       quantity_used: Number(row.quantity_used),
+      removable: row.removable,
     }),
   );
 }

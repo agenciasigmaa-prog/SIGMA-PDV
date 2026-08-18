@@ -19,16 +19,32 @@ export function useTableContext() {
 
 // Não existe mais mesa fixa por QR — o link é por restaurante (só abre o
 // cardápio); a mesa é digitada pelo cliente na hora de confirmar o pedido.
-export function TableProvider({ restaurantId, children }: { restaurantId: string; children: ReactNode }) {
+// Aceita restaurantId (rota /loja/:id) OU slug (subdomínio) — sempre um dos
+// dois, nunca os dois ao mesmo tempo.
+export function TableProvider({
+  restaurantId,
+  slug,
+  children,
+}: {
+  restaurantId?: string;
+  slug?: string;
+  children: ReactNode;
+}) {
   const [state, setState] = useState<"loading" | "not-found" | "ready">("loading");
   const [info, setInfo] = useState<RestaurantInfo | null>(null);
+  const lookupColumn = slug ? "slug" : "id";
+  const lookupValue = slug ?? restaurantId;
 
   useEffect(() => {
+    if (!lookupValue) {
+      setState("not-found");
+      return;
+    }
     setState("loading");
     supabase
       .from("restaurants")
       .select("id, name, restaurant_branding(display_name, logo_url, favicon_url, primary_color)")
-      .eq("id", restaurantId)
+      .eq(lookupColumn, lookupValue)
       .maybeSingle()
       .then(({ data }) => {
         if (!data) {
@@ -50,7 +66,7 @@ export function TableProvider({ restaurantId, children }: { restaurantId: string
         });
         setState("ready");
       });
-  }, [restaurantId]);
+  }, [lookupColumn, lookupValue]);
 
   // Aplica a cor da marca só enquanto esse restaurante está montado — some se
   // sair pra uma tela sem contexto de restaurante.

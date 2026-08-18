@@ -6,6 +6,18 @@ import type { Restaurant } from "../lib/restaurant";
 
 type OwnerInfo = { user_id: string; email: string; full_name: string | null; phone: string | null };
 
+// Mesma normalização que o trigger do banco (restaurants_set_slug) aplicaria
+// — feita aqui só pra já mostrar/enviar o valor limpo, a unicidade quem
+// garante é a constraint no banco (tratada como erro 23505 acima).
+function normalizeSlug(raw: string): string {
+  return raw
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export function EditRestaurantModal({
   restaurant,
   onClose,
@@ -45,6 +57,7 @@ export function EditRestaurantModal({
     const contact_name = String(form.get("contact_name") ?? "");
     const contact_email = String(form.get("contact_email") ?? "");
     const contact_phone = String(form.get("contact_phone") ?? "");
+    const slug = normalizeSlug(String(form.get("slug") ?? ""));
     const ownerEmail = String(form.get("owner_email") ?? "");
     const ownerFullName = String(form.get("owner_full_name") ?? "");
     const ownerPhone = String(form.get("owner_phone") ?? "");
@@ -52,12 +65,16 @@ export function EditRestaurantModal({
 
     const { error: restaurantError } = await supabase
       .from("restaurants")
-      .update({ name, contact_name, contact_email, contact_phone })
+      .update({ name, contact_name, contact_email, contact_phone, slug })
       .eq("id", restaurant.id);
 
     if (restaurantError) {
       setSaving(false);
-      setSaveError(restaurantError.message);
+      setSaveError(
+        restaurantError.code === "23505"
+          ? "Esse endereço (slug) já está em uso por outro restaurante."
+          : restaurantError.message,
+      );
       return;
     }
 
@@ -118,6 +135,10 @@ export function EditRestaurantModal({
           <fieldset className="space-y-2">
             <legend className="mb-1 text-xs font-bold uppercase tracking-wide text-muted-foreground">Restaurante</legend>
             <input name="name" defaultValue={restaurant.name} required placeholder="Nome" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />
+            <div>
+              <input name="slug" defaultValue={restaurant.slug} placeholder="Endereço (slug)" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />
+              <p className="mt-1 text-xs text-muted-foreground">Usado no subdomínio da loja — gerado do nome automaticamente, mas pode ser alterado.</p>
+            </div>
             <input name="contact_name" defaultValue={restaurant.contact_name ?? ""} placeholder="Nome do contato" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />
             <input name="contact_phone" defaultValue={restaurant.contact_phone ?? ""} placeholder="Telefone" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />
             <input name="contact_email" type="email" defaultValue={restaurant.contact_email ?? ""} placeholder="E-mail de contato" className="w-full rounded-xl border border-border px-3 py-2 text-sm" />

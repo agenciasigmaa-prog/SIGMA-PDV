@@ -112,6 +112,10 @@ export function buildComandaEntrega(order: IncomingOrder, restaurantName: string
     cmds.push({ op: "line" });
     cmds.push({ op: "text", value: "ENDERECO", bold: true });
     cmds.push({ op: "text", value: order.delivery_address.text });
+    if (order.neighborhood_name) cmds.push({ op: "text", value: order.neighborhood_name, bold: true });
+  }
+  if (order.delivery_driver_name) {
+    cmds.push({ op: "text", value: `Motoboy: ${order.delivery_driver_name}` });
   }
 
   cmds.push({ op: "line" });
@@ -174,6 +178,9 @@ function totalsBlock(order: IncomingOrder): EscPosCommand[] {
   }
   if (order.service_charge_amount > 0) {
     cmds.push({ op: "columns", left: "Servico", right: currency(order.service_charge_amount) });
+  }
+  if (order.delivery_fee_amount > 0) {
+    cmds.push({ op: "columns", left: "Taxa de entrega", right: currency(order.delivery_fee_amount) });
   }
   cmds.push({ op: "line" });
   cmds.push({ op: "text", value: `TOTAL ${currency(order.total)}`, bold: true, size: "double", align: "right" });

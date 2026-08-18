@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "./supabase";
+import { describeFunctionError } from "./functionError";
 
 export type OrderStatus = "received" | "preparing" | "ready" | "completed" | "cancelled";
 export type OrderType = "dine_in" | "pickup" | "delivery";
@@ -30,6 +31,19 @@ export type IncomingOrderItem = {
 
 export type PaymentMethod = "cash" | "card" | "pix";
 
+export type SplitPayment = { method: PaymentMethod; amount: number };
+
+export type OrderPaymentSplit = {
+  id: string;
+  label: string;
+  amount: number;
+  payment_method: PaymentMethod | null;
+  status: "pending" | "paid";
+  paid_at: string | null;
+  voided_at: string | null;
+  payments: SplitPayment[];
+};
+
 export type IncomingOrder = {
   id: string;
   customer_name: string;
@@ -44,11 +58,25 @@ export type IncomingOrder = {
   subtotal: number;
   discount_amount: number;
   service_charge_amount: number;
+  delivery_fee_amount: number;
   total: number;
   created_at: string;
   status_changed_at: string;
   items: IncomingOrderItem[];
+  payment_splits: OrderPaymentSplit[];
+  waiter_id: string | null;
+  waiter_name: string | null;
+  delivery_driver_id: string | null;
+  delivery_driver_name: string | null;
+  neighborhood_id: string | null;
+  neighborhood_name: string | null;
 };
+
+// null = divisão não configurada pro pedido (fluxo de pagamento único normal).
+export function splitProgress(order: Pick<IncomingOrder, "payment_splits">): { paid: number; total: number } | null {
+  if (order.payment_splits.length === 0) return null;
+  return { paid: order.payment_splits.filter((s) => s.status === "paid").length, total: order.payment_splits.length };
+}
 
 export function itemTotal(item: IncomingOrderItem): number {
   const addonsPerUnit = item.addons.reduce((sum, addon) => sum + addon.unit_price * addon.quantity, 0);
@@ -76,7 +104,7 @@ function startOfToday(): string {
 // escuta pedido novo em qualquer tela, não só em /pedidos) precisa do mesmo
 // formato de linha que o board usa.
 const ORDER_SELECT =
-  "id, customer_name, table_label, pickup_code, delivery_address, status, order_type, payment_status, payment_method, notes, subtotal, discount_amount, service_charge_amount, total, created_at, status_changed_at, order_items(id, quantity, unit_price, half_flavor_name, notes, products!order_items_product_id_fkey(name), order_item_addons(name, quantity, unit_price), order_item_combo_choices(group_name, option_name), order_item_removed_ingredients(ingredient_name))";
+  "id, customer_name, table_label, pickup_code, delivery_address, status, order_type, payment_status, payment_method, notes, subtotal, discount_amount, service_charge_amount, delivery_fee_amount, total, created_at, status_changed_at, waiter_id, waiters(name), delivery_driver_id, delivery_drivers(name), neighborhood_id, neighborhood_name, order_items(id, quantity, unit_price, half_flavor_name, notes, products!order_items_product_id_fkey(name), order_item_addons(name, quantity, unit_price), order_item_combo_choices(group_name, option_name), order_item_removed_ingredients(ingredient_name)), order_payment_splits(id, label, amount, payment_method, status, paid_at, voided_at, order_payment_split_payments(method, amount))";
 
 type RawItem = {
   id: string;
@@ -88,6 +116,16 @@ type RawItem = {
   order_item_addons: { name: string; quantity: number; unit_price: number }[];
   order_item_combo_choices: { group_name: string; option_name: string }[];
   order_item_removed_ingredients: { ingredient_name: string }[];
+};
+type RawSplit = {
+  id: string;
+  label: string;
+  amount: number;
+  payment_method: PaymentMethod | null;
+  status: "pending" | "paid";
+  paid_at: string | null;
+  voided_at: string | null;
+  order_payment_split_payments: { method: PaymentMethod; amount: number }[];
 };
 type RawOrder = {
   id: string;
@@ -103,10 +141,18 @@ type RawOrder = {
   subtotal: number;
   discount_amount: number;
   service_charge_amount: number;
+  delivery_fee_amount: number;
   total: number;
   created_at: string;
   status_changed_at: string;
+  waiter_id: string | null;
+  waiters: { name: string } | null;
+  delivery_driver_id: string | null;
+  delivery_drivers: { name: string } | null;
+  neighborhood_id: string | null;
+  neighborhood_name: string | null;
   order_items: RawItem[];
+  order_payment_splits: RawSplit[];
 };
 
 function mapRawOrder(order: RawOrder): IncomingOrder {
@@ -124,6 +170,7 @@ function mapRawOrder(order: RawOrder): IncomingOrder {
     subtotal: Number(order.subtotal),
     discount_amount: Number(order.discount_amount),
     service_charge_amount: Number(order.service_charge_amount),
+    delivery_fee_amount: Number(order.delivery_fee_amount),
     total: Number(order.total),
     created_at: order.created_at,
     status_changed_at: order.status_changed_at,
@@ -138,6 +185,22 @@ function mapRawOrder(order: RawOrder): IncomingOrder {
       combo_choices: item.order_item_combo_choices.map((c) => ({ group_name: c.group_name, option_name: c.option_name })),
       removed_ingredients: item.order_item_removed_ingredients.map((r) => r.ingredient_name),
     })),
+    payment_splits: (order.order_payment_splits ?? []).map((split) => ({
+      id: split.id,
+      label: split.label,
+      amount: Number(split.amount),
+      payment_method: split.payment_method,
+      status: split.status,
+      paid_at: split.paid_at,
+      voided_at: split.voided_at,
+      payments: (split.order_payment_split_payments ?? []).map((p) => ({ method: p.method, amount: Number(p.amount) })),
+    })),
+    waiter_id: order.waiter_id,
+    waiter_name: order.waiters?.name ?? null,
+    delivery_driver_id: order.delivery_driver_id,
+    delivery_driver_name: order.delivery_drivers?.name ?? null,
+    neighborhood_id: order.neighborhood_id,
+    neighborhood_name: order.neighborhood_name,
   };
 }
 
@@ -181,6 +244,15 @@ export function useIncomingOrders(restaurantId: string | null) {
     load();
   }, [load]);
 
+  // Debounce curto: mark_paid da divisão toca order_payment_splits E orders
+  // (quando é a última parte), o que dispararia dois reloads em sequência
+  // sem isso — os dois canais abaixo passam por aqui.
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReload = useCallback(() => {
+    if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    reloadTimer.current = setTimeout(() => load(), 150);
+  }, [load]);
+
   // Tempo real: pedido novo ou mudança de status em qualquer tela recarrega
   // o board sozinho, sem precisar apertar nada — respeita a mesma RLS de
   // leitura que a query acima já usa. Som e impressão automática de pedido
@@ -194,44 +266,147 @@ export function useIncomingOrders(restaurantId: string | null) {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "orders", filter: `restaurant_id=eq.${restaurantId}` },
-        () => load(),
+        () => scheduleReload(),
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "orders", filter: `restaurant_id=eq.${restaurantId}` },
-        () => load(),
+        () => scheduleReload(),
       )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [restaurantId, load]);
+  }, [restaurantId, scheduleReload]);
 
-  async function advanceStatus(orderId: string, next: OrderStatus) {
-    await supabase
+  // Progresso da divisão de conta (order_payment_splits) muda sem tocar a
+  // linha de orders (exceto quando a última parte é paga) — precisa do
+  // próprio canal pra outra tela ver o "N de M pagas" em tempo real.
+  useEffect(() => {
+    if (!restaurantId) return;
+    const channel = supabase
+      .channel(`order-payment-splits-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "order_payment_splits", filter: `restaurant_id=eq.${restaurantId}` },
+        () => scheduleReload(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "order_payment_splits", filter: `restaurant_id=eq.${restaurantId}` },
+        () => scheduleReload(),
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [restaurantId, scheduleReload]);
+
+  // Status de fluxo (comida saiu) e status de pagamento são independentes —
+  // avançar pra "completed" não marca mais payment_status='paid' sozinho.
+  // Pagamento só é confirmado explicitamente pela aba Garçom (markSplitPaid).
+  async function advanceStatus(orderId: string, next: OrderStatus): Promise<{ ok: boolean; error?: string }> {
+    const { error } = await supabase
       .from("orders")
-      .update({
-        status: next,
-        status_changed_at: new Date().toISOString(),
-        ...(next === "completed" ? { payment_status: "paid" } : {}),
-      })
+      .update({ status: next, status_changed_at: new Date().toISOString() })
       .eq("id", orderId);
     await load();
+    return { ok: !error, error: error?.message };
   }
 
-  async function cancelOrder(orderId: string) {
-    await supabase
+  async function cancelOrder(orderId: string): Promise<{ ok: boolean; error?: string }> {
+    // Pode ser rejeitado pelo trigger de banco (guard_order_payment_updates)
+    // se o pedido tiver parte da divisão já paga.
+    const { error } = await supabase
       .from("orders")
       .update({ status: "cancelled", status_changed_at: new Date().toISOString() })
       .eq("id", orderId);
     await load();
+    return { ok: !error, error: error?.message };
   }
 
-  // Só grava forma de pagamento/status — sem recálculo de preço, então a
-  // policy orders_staff_update já cobre, não precisa de Edge Function.
-  async function registerPayment(orderId: string, method: PaymentMethod) {
-    await supabase.from("orders").update({ payment_method: method, payment_status: "paid" }).eq("id", orderId);
+  // Só grava o vínculo — sem recálculo de preço, então a policy
+  // orders_staff_update já cobre, não precisa de Edge Function.
+  async function assignWaiter(orderId: string, waiterId: string): Promise<{ ok: boolean; error?: string }> {
+    const { error } = await supabase.from("orders").update({ waiter_id: waiterId }).eq("id", orderId);
     await load();
+    return { ok: !error, error: error?.message };
+  }
+
+  // Compare-and-swap: só assume se ainda estiver não atribuído — sem isso,
+  // dois garçons clicando "Assumir" quase juntos fariam o segundo roubar o
+  // pedido do primeiro sem aviso nenhum.
+  async function claimOrder(orderId: string, waiterId: string): Promise<{ ok: boolean; error?: string }> {
+    const { data, error } = await supabase
+      .from("orders")
+      .update({ waiter_id: waiterId })
+      .eq("id", orderId)
+      .is("waiter_id", null)
+      .select("id");
+    await load();
+    if (error) return { ok: false, error: error.message };
+    if ((data ?? []).length === 0) return { ok: false, error: "Esse pedido já foi assumido por outro garçom" };
+    return { ok: true };
+  }
+
+  // Mesmo raciocínio de assignWaiter — só grava o vínculo, sem recálculo de
+  // preço, então a policy orders_staff_update já cobre.
+  async function assignDeliveryDriver(orderId: string, driverId: string): Promise<{ ok: boolean; error?: string }> {
+    const { error } = await supabase.from("orders").update({ delivery_driver_id: driverId }).eq("id", orderId);
+    await load();
+    return { ok: !error, error: error?.message };
+  }
+
+  // Compare-and-swap — mesmo raciocínio de claimOrder, pra dois motoboys não
+  // roubarem a mesma entrega um do outro sem aviso.
+  async function claimDeliveryOrder(orderId: string, driverId: string): Promise<{ ok: boolean; error?: string }> {
+    const { data, error } = await supabase
+      .from("orders")
+      .update({ delivery_driver_id: driverId })
+      .eq("id", orderId)
+      .is("delivery_driver_id", null)
+      .select("id");
+    await load();
+    if (error) return { ok: false, error: error.message };
+    if ((data ?? []).length === 0) return { ok: false, error: "Esse pedido já foi assumido por outro motoboy" };
+    return { ok: true };
+  }
+
+  // Cria (ou substitui) a divisão de conta de um pedido. `payload` é o corpo
+  // específico do modo (equal/manual/by_item) — ver staff-split-payment.
+  async function configureSplit(orderId: string, payload: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+    const { error } = await supabase.functions.invoke("staff-split-payment", {
+      body: { order_id: orderId, action: "configure_split", ...payload },
+    });
+    if (error) return { ok: false, error: await describeFunctionError(error) };
+    await load();
+    return { ok: true };
+  }
+
+  // `splitId` null = pedido ainda sem divisão configurada; o servidor cria
+  // implicitamente um único split cobrindo o total ("Pagamento total").
+  // `payments` suporta mais de uma forma cobrindo o mesmo valor (pagamento
+  // misto) — precisa somar exatamente o valor da parte.
+  async function markSplitPaid(
+    orderId: string,
+    splitId: string | null,
+    payments: SplitPayment[],
+  ): Promise<{ ok: boolean; error?: string }> {
+    const { error } = await supabase.functions.invoke("staff-split-payment", {
+      body: { order_id: orderId, action: "mark_paid", split_id: splitId ?? undefined, payments },
+    });
+    if (error) return { ok: false, error: await describeFunctionError(error) };
+    await load();
+    return { ok: true };
+  }
+
+  async function voidSplit(orderId: string, splitId: string): Promise<{ ok: boolean; error?: string }> {
+    const { error } = await supabase.functions.invoke("staff-split-payment", {
+      body: { order_id: orderId, action: "void_split", split_id: splitId },
+    });
+    if (error) return { ok: false, error: await describeFunctionError(error) };
+    await load();
+    return { ok: true };
   }
 
   return {
@@ -240,6 +415,12 @@ export function useIncomingOrders(restaurantId: string | null) {
     reload: load,
     advanceStatus,
     cancelOrder,
-    registerPayment,
+    assignWaiter,
+    claimOrder,
+    assignDeliveryDriver,
+    claimDeliveryOrder,
+    configureSplit,
+    markSplitPaid,
+    voidSplit,
   };
 }

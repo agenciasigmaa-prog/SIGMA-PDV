@@ -10,6 +10,7 @@ type ItemInput = {
   half_flavor_product_id?: string;
   combo_choices?: ComboChoiceInput[];
   removed_ingredient_ids?: string[];
+  notes?: string;
 };
 type HalfAndHalfPricingMode = "higher_price" | "average";
 
@@ -42,6 +43,26 @@ Deno.serve(async (req) => {
     const delivery_address_text = String(body.delivery_address ?? "").trim();
     const order_type = body.order_type === "pickup" ? "pickup" : body.order_type === "delivery" ? "delivery" : "dine_in";
     const items = (Array.isArray(body.items) ? body.items : []) as ItemInput[];
+    // Forma de pagamento pretendida, escolhida na hora do pedido (não a
+    // confirmação de pagamento em si, que é outra coisa e vive em
+    // order_payment_splits) — hoje só usada pra avisar o motoboy "leva
+    // troco" quando for dinheiro. Não valida contra nada além do enum.
+    const payment_method =
+      body.payment_method === "cash" || body.payment_method === "card" || body.payment_method === "pix"
+        ? body.payment_method
+        : null;
+    // Troco só faz sentido em dinheiro — valor bruto lido aqui, validado
+    // (>= total) mais abaixo depois que o total é calculado no servidor.
+    const requestedChangeFor = payment_method === "cash" && body.change_for != null ? Number(body.change_for) : null;
+
+    // waiter_id/delivery_driver_id só existem pra pedido lançado por staff
+    // (ManualOrderModal) — um cliente anônimo do storefront nunca escolhe
+    // garçom/motoboy. Mesmo se um request de cliente mandar o campo
+    // manualmente, ignora (nunca confia que o client não vai mandar) —
+    // mesmo crivo de callerIsStaff já usado acima pra customer_id.
+    const requestedWaiterId = callerIsStaff && body.waiter_id ? String(body.waiter_id) : "";
+    const requestedDeliveryDriverId = callerIsStaff && body.delivery_driver_id ? String(body.delivery_driver_id) : "";
+    const requestedNeighborhoodId = String(body.neighborhood_id ?? "");
 
     // Não existe mais mesa mapeada por QR — o cliente/staff digita o próprio
     // nome e o número da mesa na hora de confirmar. Texto livre, só exige não
@@ -55,11 +76,12 @@ Deno.serve(async (req) => {
       !customer_name ||
       items.length === 0 ||
       (order_type === "dine_in" && !table_label) ||
-      (order_type === "delivery" && !delivery_address_text)
+      (order_type === "delivery" && !delivery_address_text) ||
+      (order_type === "delivery" && !requestedNeighborhoodId)
     ) {
       return new Response(
         JSON.stringify({
-          error: "restaurant_id, customer_name, items e (mesa ou endereço, conforme o canal) are required",
+          error: "restaurant_id, customer_name, items, endereço/mesa (conforme o canal) e bairro (pra entrega) are required",
         }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
@@ -76,6 +98,60 @@ Deno.serve(async (req) => {
         status: 404,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // Garçom inválido/de outro restaurante não deve travar o pedido inteiro
+    // (atribuir garçom não é crítico o bastante pra bloquear a criação) — só
+    // ignora e grava null.
+    let waiter_id: string | null = null;
+    if (requestedWaiterId) {
+      const { data: waiter } = await serviceClient
+        .from("waiters")
+        .select("id")
+        .eq("id", requestedWaiterId)
+        .eq("restaurant_id", restaurant_id)
+        .maybeSingle();
+      waiter_id = waiter?.id ?? null;
+    }
+
+    // Motoboy inválido/de outro restaurante também não trava o pedido — só
+    // ignora e grava null, mesmo raciocínio do garçom acima.
+    let delivery_driver_id: string | null = null;
+    if (requestedDeliveryDriverId) {
+      const { data: driver } = await serviceClient
+        .from("delivery_drivers")
+        .select("id")
+        .eq("id", requestedDeliveryDriverId)
+        .eq("restaurant_id", restaurant_id)
+        .maybeSingle();
+      delivery_driver_id = driver?.id ?? null;
+    }
+
+    // Bairro é obrigatório pra pedido de entrega (validado acima) — a taxa
+    // cobrada do cliente é congelada aqui (neighborhood_name/delivery_fee)
+    // pra nunca mudar de valor se o dono editar a taxa do bairro depois.
+    // Esse valor é exatamente o que o motoboy recebe por essa entrega.
+    let neighborhood_id: string | null = null;
+    let neighborhood_name: string | null = null;
+    let delivery_fee_amount = 0;
+    if (order_type === "delivery") {
+      const { data: neighborhood, error: neighborhoodError } = await serviceClient
+        .from("neighborhoods")
+        .select("id, name, delivery_fee")
+        .eq("id", requestedNeighborhoodId)
+        .eq("restaurant_id", restaurant_id)
+        .eq("active", true)
+        .maybeSingle();
+      if (neighborhoodError) throw neighborhoodError;
+      if (!neighborhood) {
+        return new Response(JSON.stringify({ error: "Bairro não encontrado" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      neighborhood_id = neighborhood.id;
+      neighborhood_name = neighborhood.name;
+      delivery_fee_amount = Number(neighborhood.delivery_fee);
     }
 
     // Preço NUNCA vem do client. Produto esgotado hoje cai no mesmo caminho de
@@ -178,13 +254,17 @@ Deno.serve(async (req) => {
     }
 
     // Retirada de ingrediente: precisa pertencer mesmo à ficha técnica
-    // (product_ingredients) do produto pedido — mesma ética de nunca confiar
-    // só no que o client mandou. Não afeta preço.
+    // (product_ingredients) do produto pedido, e o ingrediente precisa estar
+    // marcado como removível (removable) — mesma ética de nunca confiar só
+    // no que o client mandou, agora também pro ingrediente travado (ex. pão
+    // de um hambúrguer) que a UI já nem oferece a opção de tirar. Não afeta
+    // preço.
     const { data: productIngredientRows, error: productIngredientsError } = comboProductIds.length
       ? await serviceClient
           .from("product_ingredients")
           .select("product_id, ingredient_id, ingredients(name)")
           .in("product_id", comboProductIds)
+          .eq("removable", true)
       : { data: [] as never[], error: null };
     if (productIngredientsError) throw productIngredientsError;
 
@@ -212,6 +292,7 @@ Deno.serve(async (req) => {
       half_flavor_name: string | null;
       combo_choices: ResolvedComboChoice[];
       removed_ingredients: ResolvedRemovedIngredient[];
+      notes: string | null;
     };
 
     const invalidAddonIds: string[] = [];
@@ -291,6 +372,7 @@ Deno.serve(async (req) => {
         half_flavor_name: halfFlavorName,
         combo_choices: resolvedComboChoices,
         removed_ingredients: resolvedRemovedIngredients,
+        notes: typeof item.notes === "string" && item.notes.trim() ? item.notes.trim() : null,
       };
     });
 
@@ -340,16 +422,31 @@ Deno.serve(async (req) => {
     // addons[].quantity é "quantidade do adicional por UNIDADE do produto" —
     // por isso o custo dos adicionais também multiplica pela quantidade do
     // item (2 burgers com 1 bacon cada = 2 bacons cobrados, não 1).
-    const total = resolvedItems.reduce((sum, item) => {
+    const itemsSubtotal = resolvedItems.reduce((sum, item) => {
       const addonsPerUnit = item.addons.reduce((s, a) => s + a.unit_price * a.quantity, 0);
       return sum + (item.unit_price + addonsPerUnit) * item.quantity;
     }, 0);
+    // Taxa de entrega soma no total cobrado do cliente — aparece separada do
+    // subtotal dos itens na comanda/conta (mesmo padrão de desconto/taxa de
+    // serviço), pra transparência de quanto é comida e quanto é entrega.
+    const total = itemsSubtotal + delivery_fee_amount;
+
+    // Troco só existe pra delivery em dinheiro, e nunca pode ser menor que o
+    // total (senão não sobra troco nenhum pra dar) — validado aqui, depois
+    // que o total já foi recalculado no servidor, nunca confia no client.
+    if (order_type === "delivery" && requestedChangeFor != null && requestedChangeFor < total) {
+      return new Response(
+        JSON.stringify({ error: "O troco pedido precisa ser maior ou igual ao total do pedido" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+    const change_for = order_type === "delivery" ? requestedChangeFor : null;
 
     // Código de retirada: 4 dígitos, sequencial por dia por restaurante —
     // conta quantos pedidos "pickup" esse restaurante já teve hoje e usa
     // count + 1. Corrida entre dois pedidos simultâneos poderia, em teoria,
-    // gerar o mesmo número — aceitável nesse volume (staff lança manualmente
-    // por ora, não é canal de autoatendimento ainda).
+    // gerar o mesmo número — aceitável nesse volume, seja lançado pelo staff
+    // ou direto pelo cliente no cardápio público.
     let pickup_code: string | null = null;
     if (order_type === "pickup") {
       const startOfToday = new Date();
@@ -372,14 +469,21 @@ Deno.serve(async (req) => {
       .insert({
         restaurant_id,
         customer_id,
+        waiter_id,
+        delivery_driver_id,
         order_type,
         status: "received",
         customer_name,
         table_label: order_type === "dine_in" ? table_label : null,
         delivery_address: order_type === "delivery" ? { text: delivery_address_text } : null,
+        neighborhood_id,
+        neighborhood_name,
+        delivery_fee_amount,
         pickup_code,
         payment_status: "pending",
-        subtotal: total,
+        payment_method,
+        change_for,
+        subtotal: itemsSubtotal,
         total,
       })
       .select("id")
@@ -398,6 +502,7 @@ Deno.serve(async (req) => {
           unit_price: item.unit_price,
           half_flavor_product_id: item.half_flavor_product_id,
           half_flavor_name: item.half_flavor_name,
+          notes: item.notes,
         })
         .select("id")
         .single();

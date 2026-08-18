@@ -23,6 +23,7 @@ type AddItemOptions = {
   halfFlavor?: CartHalfFlavor;
   comboChoices?: CartComboChoice[];
   removedIngredients?: RemovableIngredient[];
+  quantity?: number;
 };
 
 type CartValue = {
@@ -82,7 +83,7 @@ export function CartProvider({ restaurantId, children }: { restaurantId: string;
   }, [restaurantId, items]);
 
   function addItem(product: Product, options: AddItemOptions = {}) {
-    const { addons = [], halfFlavor, comboChoices = [], removedIngredients = [] } = options;
+    const { addons = [], halfFlavor, comboChoices = [], removedIngredients = [], quantity = 1 } = options;
     setItems((prev) => {
       const signature = addonSignature(addons);
       const choiceSignature = comboChoiceSignature(comboChoices);
@@ -96,7 +97,9 @@ export function CartProvider({ restaurantId, children }: { restaurantId: string;
           removedIngredientsSignature(item.removedIngredients ?? []) === removedSignature,
       );
       if (existingIndex >= 0) {
-        return prev.map((item, index) => (index === existingIndex ? { ...item, quantity: item.quantity + 1 } : item));
+        return prev.map((item, index) =>
+          index === existingIndex ? { ...item, quantity: item.quantity + quantity } : item,
+        );
       }
       return [
         ...prev,
@@ -105,7 +108,7 @@ export function CartProvider({ restaurantId, children }: { restaurantId: string;
           productId: product.id,
           name: halfFlavor ? `${product.name} / ${halfFlavor.name}` : product.name,
           price: halfFlavor ? halfFlavor.price : product.price,
-          quantity: 1,
+          quantity,
           addons,
           halfFlavor: halfFlavor ? { productId: halfFlavor.productId, name: halfFlavor.name } : undefined,
           comboChoices: comboChoices.length > 0 ? comboChoices : undefined,

@@ -5,6 +5,7 @@ function makeRestaurant(overrides: Partial<Restaurant> = {}): Restaurant {
   return {
     id: "id-1",
     name: "Burger House",
+    slug: "burger-house",
     status: "onboarding",
     contact_name: "Maria Silva",
     contact_email: "maria@example.com",

@@ -97,13 +97,17 @@ export async function saveAgentConfig(config: AgentConfig): Promise<AgentConfig>
   return (await response.json()) as AgentConfig;
 }
 
-async function printCommands(commands: EscPosCommand[]): Promise<{ ok: true; jobId: string }> {
+// Um /print por impressora — o agente já aceita um `printerName` por request
+// (sobrepõe o padrão configurado nele), então imprimir na MESMA comanda em
+// 2+ impressoras é só chamar isso mais de uma vez, sem precisar mudar nada
+// no agente (Go) nem redistribuir o .exe.
+async function printOnePrinter(commands: EscPosCommand[], printerName?: string): Promise<{ ok: true; jobId: string }> {
   // Timeout generoso (65s): o agente já aplica 60s de timeout de segurança
   // internamente (impressora offline etc.); o front só precisa esperar um
   // pouco mais que isso pra não cortar a resposta antes da hora.
   const response = await agentFetch(
     "/print",
-    { method: "POST", body: JSON.stringify({ formato: "escpos", commands }) },
+    { method: "POST", body: JSON.stringify({ formato: "escpos", commands, ...(printerName ? { printerName } : {}) }) },
     65000,
   );
 
@@ -117,16 +121,52 @@ async function printCommands(commands: EscPosCommand[]): Promise<{ ok: true; job
   throw new AgentError(message, "unknown");
 }
 
-/** Imprime a comanda certa pro pedido (cozinha ou entrega, pelo canal). */
-export function printOrder(order: IncomingOrder, restaurantName: string) {
-  return printCommands(buildOrderDocument(order, restaurantName));
+// Dispara em paralelo: impressora principal (undefined = usa a configurada
+// no agente) + cada impressora extra. Só lança erro se TODAS falharem —
+// senão uma impressora sem papel derrubaria a comanda inteira, mesmo que as
+// outras tivessem imprimido normalmente.
+async function printCommands(commands: EscPosCommand[], extraPrinterNames: string[] = []): Promise<void> {
+  const targets: (string | undefined)[] = [undefined, ...extraPrinterNames];
+  const results = await Promise.allSettled(targets.map((printerName) => printOnePrinter(commands, printerName)));
+  const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (failures.length === results.length) throw failures[0].reason;
+}
+
+/** Imprime a comanda certa pro pedido (cozinha ou entrega, pelo canal), na
+ * impressora principal e em quaisquer impressoras extras configuradas. */
+export function printOrder(order: IncomingOrder, restaurantName: string, extraPrinterNames?: string[]) {
+  return printCommands(buildOrderDocument(order, restaurantName), extraPrinterNames);
 }
 
 /** Página de teste — usada no primeiro clique da tela /impressora, que é o
  * gesto de usuário necessário pro prompt de Local Network Access do Chrome
  * (ver agente/README.md). */
-export function printTeste(restaurantName: string, printerName: string, paperWidth: number) {
-  return printCommands(buildTeste(restaurantName, printerName, paperWidth));
+export function printTeste(restaurantName: string, printerName: string, paperWidth: number, extraPrinterNames?: string[]) {
+  return printCommands(buildTeste(restaurantName, printerName, paperWidth), extraPrinterNames);
+}
+
+function extraPrintersStorageKey(restaurantId: string) {
+  return `sigma-extra-printers-${restaurantId}`;
+}
+
+/** Impressoras adicionais (além da principal, configurada no agente) que
+ * recebem a mesma comanda ao mesmo tempo — preferência local, por
+ * máquina/navegador (mesmo raciocínio de useSelectedWaiter), já que quem
+ * está configurado aqui é o computador ligado nas impressoras físicas. */
+export function getExtraPrinterNames(restaurantId: string | null): string[] {
+  if (!restaurantId) return [];
+  try {
+    const raw = window.localStorage.getItem(extraPrintersStorageKey(restaurantId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setExtraPrinterNames(restaurantId: string, names: string[]) {
+  window.localStorage.setItem(extraPrintersStorageKey(restaurantId), JSON.stringify(names));
 }
 
 /** Mensagem amigável em português pra qualquer erro vindo daqui. */

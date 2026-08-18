@@ -1,15 +1,20 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { Header } from "../components/Header";
-import { CategoryRow } from "../components/CategoryRow";
-import { ProductSection } from "../components/ProductSection";
+import { CategoryTabs } from "../components/CategoryTabs";
+import { ProductCard } from "../components/ProductCard";
+import { OrderBar } from "../components/OrderBar";
 import { PromoCarousel } from "../components/PromoCarousel";
 import { CartDrawer } from "../components/CartDrawer";
 import { PriceChangeDialog } from "../components/PriceChangeDialog";
-import { AddonPickerSheet } from "../components/AddonPickerSheet";
+import { ProductDetailSheet } from "../components/ProductDetailSheet";
+import { CustomerAuthModal } from "../components/CustomerAuthModal";
 import { useTableContext } from "../lib/TableContext";
+import { useOrderChannel } from "../lib/OrderChannelContext";
 import { useMenu } from "../lib/useMenu";
 import { useCart, type CartAddon, type CartComboChoice, type CartHalfFlavor } from "../lib/CartContext";
+import { useCustomerAddresses } from "../lib/customerAddresses";
+import { emptyDeliveryDetails, type DeliveryDetails } from "../lib/orderCheckout";
 import { supabase } from "../lib/supabase";
 import { describeFunctionError } from "../lib/functionError";
 import { checkCartPrices, type CartPriceCheckResult } from "../lib/cartPriceCheck";
@@ -18,8 +23,15 @@ import type { PromoBanner } from "../lib/promoBanners";
 import type { Product } from "../lib/menu";
 import type { RemovableIngredient } from "../lib/removableIngredients";
 
+// Offset das duas barras fixas no topo (Header h-16 + CategoryTabs ~56px) —
+// usado tanto no scroll-mt das seções quanto no rootMargin do scroll-spy,
+// pra manter os dois em sincronia sem duplicar o número em vários lugares.
+const STICKY_HEADER_OFFSET = 128;
+
 export function MesaCardapio() {
   const { restaurantId, restaurantName, logoUrl } = useTableContext();
+  const orderType = useOrderChannel();
+  const { addresses: savedAddresses, saveAddress } = useCustomerAddresses();
   const {
     categories,
     products,
@@ -44,7 +56,39 @@ export function MesaCardapio() {
   // vinda de QR. Texto livre, sem validar contra nada (decisão explícita).
   const [customerName, setCustomerName] = useState("");
   const [tableLabel, setTableLabel] = useState("");
-  const [lastOrderTableLabel, setLastOrderTableLabel] = useState("");
+  const [deliveryDetails, setDeliveryDetails] = useState<DeliveryDetails>(emptyDeliveryDetails);
+  // Dado do último pedido confirmado, só o necessário pra mensagem de
+  // confirmação variar por canal (mesa/código de retirada/endereço).
+  const [lastOrderInfo, setLastOrderInfo] = useState<{ tableLabel: string; pickupCode: string | null; address: string } | null>(
+    null,
+  );
+  const [showAuthGate, setShowAuthGate] = useState(false);
+  // Categoria destacada nas abas fixas — segue a seção mais visível ao rolar
+  // (scroll-spy), não uma tela separada. "outros" é o id sintético dos
+  // produtos sem categoria.
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
+  // Header troca de logo pra barra de busca ao rolar pra baixo (em vez de
+  // deixar a logo cortada no topo) ou ao tocar na lupa — os dois casos
+  // mostram a mesma barra, então usam o mesmo estado visual.
+  const [scrolled, setScrolled] = useState(false);
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const showSearchBar = scrolled || searchExpanded;
+
+  useEffect(() => {
+    function onScroll() {
+      setScrolled(window.scrollY > 160);
+    }
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  function handleCollapseSearch() {
+    setSearchExpanded(false);
+    setSearchQuery("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   // Somado por produto (não por linha) — é só pra mostrar contagem no card
   // do produto; o carrinho de verdade opera por linha (lineId).
@@ -77,14 +121,82 @@ export function MesaCardapio() {
     return { categorized, uncategorized };
   }, [categories, products]);
 
-  async function submitOrder(name: string, table: string) {
+  // Filtra por nome/descrição quando a busca está em uso; categoria sem
+  // nenhum produto que bata some da lista (mesmo raciocínio que já existia
+  // pra categoria vazia, só que aplicado depois do filtro).
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleGrouped = useMemo(() => {
+    if (!normalizedQuery) return grouped;
+    const matches = (p: Product) =>
+      p.name.toLowerCase().includes(normalizedQuery) || (p.description ?? "").toLowerCase().includes(normalizedQuery);
+    return {
+      categorized: grouped.categorized
+        .map((g) => ({ category: g.category, products: g.products.filter(matches) }))
+        .filter((g) => g.products.length > 0),
+      uncategorized: grouped.uncategorized.filter(matches),
+    };
+  }, [grouped, normalizedQuery]);
+
+  const tabCategories = useMemo(() => {
+    const list = visibleGrouped.categorized.map((g) => ({ id: g.category.id, name: g.category.name }));
+    if (visibleGrouped.uncategorized.length > 0) list.push({ id: "outros", name: "Outros" });
+    return list;
+  }, [visibleGrouped]);
+
+  // Aba ativa acompanha a rolagem: observa todas as seções e destaca a que
+  // estiver mais perto do topo (logo abaixo do header + abas fixas).
+  useEffect(() => {
+    if (tabCategories.length === 0) return;
+    const sections = tabCategories
+      .map((c) => document.getElementById(`categoria-${c.id}`))
+      .filter((el): el is HTMLElement => el !== null);
+    if (sections.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) setActiveCategoryId(visible[0].target.id.replace("categoria-", ""));
+      },
+      { rootMargin: `-${STICKY_HEADER_OFFSET + 8}px 0px -60% 0px`, threshold: 0 },
+    );
+    for (const section of sections) observer.observe(section);
+    return () => observer.disconnect();
+  }, [tabCategories]);
+
+  function scrollToCategory(categoryId: string) {
+    setActiveCategoryId(categoryId);
+    document.getElementById(`categoria-${categoryId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Endereço final do pedido: se veio de um salvo, usa o texto de lá; senão
+  // usa o que foi digitado agora no campo de endereço novo. Mesma lógica do
+  // CartDrawer, precisa bater os dois porque um valida o outro grava.
+  const resolvedAddressText =
+    deliveryDetails.selectedSavedAddressId != null
+      ? (savedAddresses.find((a) => a.id === deliveryDetails.selectedSavedAddressId)?.address_text ?? "")
+      : deliveryDetails.addressText.trim();
+
+  async function submitOrder() {
     setSubmitting(true);
     setError(null);
     const { data, error: fnError } = await supabase.functions.invoke("place-dine-in-order", {
       body: {
         restaurant_id: restaurantId,
-        customer_name: name,
-        table_label: table,
+        customer_name: customerName,
+        order_type: orderType,
+        table_label: orderType === "dine_in" ? tableLabel : undefined,
+        ...(orderType === "delivery"
+          ? {
+              delivery_address: resolvedAddressText,
+              neighborhood_id: deliveryDetails.neighborhoodId,
+              payment_method: deliveryDetails.paymentMethod,
+              ...(deliveryDetails.wantsChange && deliveryDetails.changeFor
+                ? { change_for: Number(deliveryDetails.changeFor) }
+                : {}),
+            }
+          : {}),
         items: items.map((item) => ({
           product_id: item.productId,
           quantity: item.quantity,
@@ -104,30 +216,40 @@ export function MesaCardapio() {
       setSubmitting(false);
       return;
     }
+    // Endereço novo (não escolhido de um já salvo) fica guardado pra próxima
+    // vez — não bloqueia a confirmação do pedido se falhar por algum motivo.
+    if (orderType === "delivery" && deliveryDetails.selectedSavedAddressId == null) {
+      saveAddress(resolvedAddressText);
+    }
     clear();
     setCartOpen(false);
     setOrderId(data.order_id as string);
-    setLastOrderTableLabel(table);
+    setLastOrderInfo({
+      tableLabel,
+      pickupCode: (data.pickup_code as string | null) ?? null,
+      address: resolvedAddressText,
+    });
     setCustomerName("");
     setTableLabel("");
+    setDeliveryDetails(emptyDeliveryDetails());
     setSubmitting(false);
   }
 
-  // Sem exigência de conta/login social por enquanto — decisão explícita
-  // (revisitar depois): o pedido só é "indexado" pelo nome/mesa digitados,
-  // não por identidade real. signInAnonymously() resolve na hora (sem
-  // redirect de página), só pra ter um customer_id/JWT válido pra passar
-  // pelo guard requireCustomer() da place-dine-in-order.
+  // Cadastro real (email/senha ou Google) — decisão revisitada: antes o
+  // checkout usava signInAnonymously() só pra ter um JWT válido, sem
+  // identidade nenhuma por trás. Agora precisa de sessão REAL (não anônima)
+  // pra existir um cliente reconhecível entre pedidos/restaurantes (aba
+  // Clientes). is_anonymous distingue sessão de convidado de sessão de
+  // verdade — sessão anônima antiga que ainda esteja em localStorage não
+  // conta como "logado" aqui.
   async function goToLoginOrSubmit() {
     const { data } = await supabase.auth.getSession();
-    if (!data.session) {
-      const { error: signInError } = await supabase.auth.signInAnonymously();
-      if (signInError) {
-        setError(await describeFunctionError(signInError));
-        return;
-      }
+    const hasRealSession = !!data.session && data.session.user.is_anonymous === false;
+    if (!hasRealSession) {
+      setShowAuthGate(true);
+      return;
     }
-    await submitOrder(customerName, tableLabel);
+    await submitOrder();
   }
 
   // Dispara uma única vez, só aqui — nunca em background, nunca de novo
@@ -162,24 +284,14 @@ export function MesaCardapio() {
 
   function handleSelectBanner(banner: PromoBanner) {
     if (!banner.category_id) return;
-    document.getElementById(`categoria-${banner.category_id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToCategory(banner.category_id);
   }
 
-  function handleAdd(product: Product) {
-    const groups = product.category_id ? addonGroupsByCategory.get(product.category_id) : undefined;
-    const category = product.category_id ? categoriesById.get(product.category_id) : undefined;
-    const choiceGroups = comboChoiceGroupsByProduct.get(product.id);
-    const removable = removableIngredientsByProduct.get(product.id);
-    if (
-      (groups && groups.length > 0) ||
-      category?.allow_half_and_half ||
-      (choiceGroups && choiceGroups.length > 0) ||
-      (removable && removable.length > 0)
-    ) {
-      setPickerProduct(product);
-      return;
-    }
-    addItem(product);
+  // Toque em qualquer parte da linha do produto abre a ficha (foto,
+  // descrição, customização e quantidade) — não tem mais +/- direto na
+  // lista, mesma lógica pra produto simples ou com adicionais.
+  function handleOpenDetail(product: Product) {
+    setPickerProduct(product);
   }
 
   function handlePickerConfirm({
@@ -187,26 +299,16 @@ export function MesaCardapio() {
     halfFlavor,
     comboChoices,
     removedIngredients,
+    quantity,
   }: {
     addons: CartAddon[];
     halfFlavor?: CartHalfFlavor;
     comboChoices?: CartComboChoice[];
     removedIngredients?: RemovableIngredient[];
+    quantity: number;
   }) {
-    if (pickerProduct) addItem(pickerProduct, { addons, halfFlavor, comboChoices, removedIngredients });
+    if (pickerProduct) addItem(pickerProduct, { addons, halfFlavor, comboChoices, removedIngredients, quantity });
     setPickerProduct(null);
-  }
-
-  function handleRemove(product: Product) {
-    const line = items.find(
-      (item) =>
-        item.productId === product.id &&
-        item.addons.length === 0 &&
-        !item.halfFlavor &&
-        !item.comboChoices &&
-        !item.removedIngredients,
-    );
-    if (line) setQuantity(line.lineId, line.quantity - 1);
   }
 
   function handleIncrement(lineId: string) {
@@ -226,12 +328,20 @@ export function MesaCardapio() {
         logoUrl={logoUrl}
         cartCount={totalCount}
         onCartClick={() => setCartOpen(true)}
+        showSearch={showSearchBar}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        onExpandSearch={() => setSearchExpanded(true)}
+        onCollapseSearch={handleCollapseSearch}
       />
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-12 pt-4 md:px-6 md:pt-6">
-        <div className="space-y-9 md:space-y-12">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-28 pt-4 md:px-6 md:pt-6">
+        <div className="space-y-8">
           <PromoCarousel banners={banners} onSelect={handleSelectBanner} />
-          <CategoryRow categories={categories} />
+
+          {/* Rola junto com o banner — só gruda no topo (sticky) depois que
+              o cliente passa do banner e ela alcança o header. */}
+          <CategoryTabs categories={tabCategories} activeCategoryId={activeCategoryId} onSelect={scrollToCategory} />
 
           {loading && <p className="text-sm text-muted-foreground">Carregando cardápio…</p>}
 
@@ -239,50 +349,66 @@ export function MesaCardapio() {
             <p className="text-sm text-muted-foreground">Este restaurante ainda não cadastrou itens no cardápio.</p>
           )}
 
-          {grouped.categorized.map(({ category, products: categoryProducts }) => (
-            <ProductSection
-              key={category.id}
-              id={`categoria-${category.id}`}
-              title={category.name}
-              products={categoryProducts}
-              quantities={quantities}
-              hasAddons={addonGroupsByCategory.has(category.id)}
-              hasHalfAndHalf={category.allow_half_and_half}
-              comboItemsByProduct={comboItemsByProduct}
-              comboChoiceGroupsByProduct={comboChoiceGroupsByProduct}
-              removableIngredientsByProduct={removableIngredientsByProduct}
-              onAdd={handleAdd}
-              onRemove={handleRemove}
-            />
+          {!loading &&
+            products.length > 0 &&
+            normalizedQuery &&
+            visibleGrouped.categorized.length === 0 &&
+            visibleGrouped.uncategorized.length === 0 && (
+              <p className="text-sm text-muted-foreground">Nenhum item encontrado pra "{searchQuery}".</p>
+            )}
+
+          {visibleGrouped.categorized.map(({ category, products: categoryProducts }) => (
+            <section key={category.id} id={`categoria-${category.id}`} style={{ scrollMarginTop: STICKY_HEADER_OFFSET }}>
+              <h2 className="mb-1 text-lg font-bold md:text-xl">{category.name}</h2>
+              <div>
+                {categoryProducts.map((product) => (
+                  <ProductCard
+                    key={product.id}
+                    product={product}
+                    quantity={quantities[product.id] ?? 0}
+                    comboItems={comboItemsByProduct.get(product.id)}
+                    onOpenDetail={() => handleOpenDetail(product)}
+                  />
+                ))}
+              </div>
+            </section>
           ))}
 
-          {grouped.uncategorized.length > 0 && (
-            <ProductSection
-              id="categoria-outros"
-              title="Outros"
-              products={grouped.uncategorized}
-              quantities={quantities}
-              hasAddons={false}
-              comboItemsByProduct={comboItemsByProduct}
-              comboChoiceGroupsByProduct={comboChoiceGroupsByProduct}
-              removableIngredientsByProduct={removableIngredientsByProduct}
-              onAdd={handleAdd}
-              onRemove={handleRemove}
-            />
+          {visibleGrouped.uncategorized.length > 0 && (
+            <section id="categoria-outros" style={{ scrollMarginTop: STICKY_HEADER_OFFSET }}>
+              <h2 className="mb-1 text-lg font-bold md:text-xl">Outros</h2>
+              <div>
+                {visibleGrouped.uncategorized.map((product) => (
+                  <ProductCard
+                    key={product.id}
+                    product={product}
+                    quantity={quantities[product.id] ?? 0}
+                    comboItems={comboItemsByProduct.get(product.id)}
+                    onOpenDetail={() => handleOpenDetail(product)}
+                  />
+                ))}
+              </div>
+            </section>
           )}
         </div>
       </main>
 
+      <OrderBar itemCount={totalCount} subtotal={subtotal} onClick={() => setCartOpen(true)} />
+
       <CartDrawer
         open={cartOpen}
+        restaurantId={restaurantId}
+        orderType={orderType}
         items={items}
         subtotal={subtotal}
         submitting={submitting || checkingPrices}
         error={error}
         customerName={customerName}
         tableLabel={tableLabel}
+        deliveryDetails={deliveryDetails}
         onCustomerNameChange={setCustomerName}
         onTableLabelChange={setTableLabel}
+        onDeliveryDetailsChange={setDeliveryDetails}
         onClose={() => setCartOpen(false)}
         onIncrement={handleIncrement}
         onDecrement={handleDecrement}
@@ -290,7 +416,7 @@ export function MesaCardapio() {
       />
 
       {pickerProduct && (
-        <AddonPickerSheet
+        <ProductDetailSheet
           product={pickerProduct}
           groups={addonGroupsByCategory.get(pickerProduct.category_id ?? "") ?? []}
           halfAndHalf={
@@ -315,6 +441,16 @@ export function MesaCardapio() {
         />
       )}
 
+      {showAuthGate && (
+        <CustomerAuthModal
+          onClose={() => setShowAuthGate(false)}
+          onAuthenticated={() => {
+            setShowAuthGate(false);
+            submitOrder();
+          }}
+        />
+      )}
+
       {priceCheck && (
         <PriceChangeDialog
           result={priceCheck}
@@ -323,14 +459,27 @@ export function MesaCardapio() {
         />
       )}
 
-      {orderId && (
+      {orderId && lastOrderInfo && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 px-6">
           <div className="surface-card max-w-sm p-6 text-center">
             <CheckCircle2 className="mx-auto h-12 w-12 text-primary" aria-hidden />
             <h2 className="mt-3 text-lg font-bold">Pedido enviado!</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Seu pedido foi enviado pra cozinha. O garçom vai trazer até a mesa {lastOrderTableLabel}.
-            </p>
+            {orderType === "dine_in" && (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Seu pedido foi enviado pra cozinha. O garçom vai trazer até a mesa {lastOrderInfo.tableLabel}.
+              </p>
+            )}
+            {orderType === "pickup" && (
+              <>
+                <p className="mt-1 text-sm text-muted-foreground">Seu pedido foi enviado pra cozinha. Mostre esse código no balcão:</p>
+                <p className="mt-3 text-3xl font-black tracking-widest text-primary">{lastOrderInfo.pickupCode}</p>
+              </>
+            )}
+            {orderType === "delivery" && (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Seu pedido está a caminho de {lastOrderInfo.address}.
+              </p>
+            )}
             <button
               type="button"
               onClick={() => setOrderId(null)}

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { supabase } from "./supabase";
 import { fetchOrderById, type OrderType } from "./orders";
 import { playOrderSound } from "./orderSound";
-import { describeAgentError, getAgentConfig, printOrder, probeAgent } from "./printAgent";
+import { describeAgentError, getAgentConfig, getExtraPrinterNames, printOrder, probeAgent } from "./printAgent";
 
 /**
  * Som + impressão automática de pedido novo, ativos em qualquer tela do app
@@ -20,6 +20,13 @@ export function useAutoPrintOnNewOrders(restaurantId: string | null, restaurantN
   // realtime, que só é recriado quando restaurantId muda.
   const restaurantNameRef = useRef(restaurantName);
   restaurantNameRef.current = restaurantName;
+  // Nome de canal único por instância do hook — sem isso, dois mounts
+  // concorrentes (StrictMode em dev fazendo mount→cleanup→mount, ou duas
+  // abas do painel abertas ao mesmo tempo) reusam o mesmo `RealtimeChannel`
+  // (supabase-js cacheia por tópico) e o pedido novo dispara o print duas
+  // vezes seguidas pra UM único INSERT — foi exatamente isso que aconteceu
+  // durante os testes desta sessão.
+  const instanceId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +53,7 @@ export function useAutoPrintOnNewOrders(restaurantId: string | null, restaurantN
     if (!restaurantId) return;
 
     const channel = supabase
-      .channel(`auto-print-${restaurantId}`)
+      .channel(`auto-print-${restaurantId}-${instanceId}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "orders", filter: `restaurant_id=eq.${restaurantId}` },
@@ -58,7 +65,7 @@ export function useAutoPrintOnNewOrders(restaurantId: string | null, restaurantN
           try {
             const order = await fetchOrderById(row.id);
             if (!order) return;
-            await printOrder(order, restaurantNameRef.current);
+            await printOrder(order, restaurantNameRef.current, getExtraPrinterNames(restaurantId));
           } catch (err) {
             setPrintWarning(`Falha ao imprimir comanda automaticamente: ${describeAgentError(err)}`);
             setTimeout(() => setPrintWarning(null), 8000);
@@ -70,7 +77,7 @@ export function useAutoPrintOnNewOrders(restaurantId: string | null, restaurantN
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [restaurantId, autoPrintEnabled]);
+  }, [restaurantId, autoPrintEnabled, instanceId]);
 
   return { printWarning };
 }

@@ -3,9 +3,12 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { RestaurantLayout } from "./components/RestaurantLayout";
 import { Cadastro } from "./pages/Cadastro";
 import { Cardapio } from "./pages/Cardapio";
+import { Clientes } from "./pages/Clientes";
 import { ConfiguracaoImpressao } from "./pages/ConfiguracaoImpressao";
 import { Dashboard } from "./pages/Dashboard";
+import { Garcom } from "./pages/Garcom";
 import { Login } from "./pages/Login";
+import { Motoboy } from "./pages/Motoboy";
 import { Pedidos } from "./pages/Pedidos";
 import { Welcome } from "./pages/Welcome";
 
@@ -25,6 +28,9 @@ function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/cardapio" element={<Cardapio />} />
         <Route path="/pedidos" element={<Pedidos />} />
+        <Route path="/garcom" element={<Garcom />} />
+        <Route path="/motoboy" element={<Motoboy />} />
+        <Route path="/clientes" element={<Clientes />} />
         <Route path="/impressora" element={<ConfiguracaoImpressao />} />
       </Route>
       <Route path="/" element={<Navigate to="/login" replace />} />

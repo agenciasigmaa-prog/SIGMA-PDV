@@ -5,10 +5,12 @@ import { useSession } from "../lib/useSession";
 import {
   describeAgentError,
   getAgentConfig,
+  getExtraPrinterNames,
   listPrinters,
   printTeste,
   probeAgent,
   saveAgentConfig,
+  setExtraPrinterNames,
   type AgentConfig,
   type AgentHealth,
   type AgentPrinter,
@@ -18,6 +20,11 @@ const PAPER_WIDTH_OPTIONS: { value: 58 | 80; label: string }[] = [
   { value: 58, label: "58 mm" },
   { value: 80, label: "80 mm" },
 ];
+
+// Mesmo limite validado no agente (agente/internal/config/config.go) —
+// mantém a UI e o backend em sincronia sem precisar consultar o agente pra
+// saber o teto.
+const COPIES_OPTIONS = [1, 2, 3, 4, 5];
 
 // Servido como arquivo estático pelo próprio app restaurante (Vite copia
 // tudo que está em public/ pro build sem processar) — ver
@@ -39,6 +46,31 @@ export function ConfiguracaoImpressao() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<"ok" | string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [extraPrinters, setExtraPrinters] = useState<string[]>([]);
+  const [useSecondPrinter, setUseSecondPrinter] = useState(false);
+
+  useEffect(() => {
+    const extras = getExtraPrinterNames(restaurantId);
+    setExtraPrinters(extras);
+    setUseSecondPrinter(extras.length > 0);
+  }, [restaurantId]);
+
+  // Desligar a chave limpa a segunda impressora salva — senão ela continua
+  // imprimindo em segundo plano mesmo com a chave "desligada" na tela.
+  function toggleSecondPrinter(enabled: boolean) {
+    setUseSecondPrinter(enabled);
+    if (!enabled && restaurantId) {
+      setExtraPrinters([]);
+      setExtraPrinterNames(restaurantId, []);
+    }
+  }
+
+  function selectSecondPrinter(name: string) {
+    if (!restaurantId) return;
+    const next = name ? [name] : [];
+    setExtraPrinters(next);
+    setExtraPrinterNames(restaurantId, next);
+  }
 
   useEffect(() => {
     if (!restaurantId) return;
@@ -108,7 +140,7 @@ export function ConfiguracaoImpressao() {
       if (!agent) await checkAgent();
       const printerName = config?.printerName || printers[0]?.name || "";
       const paperWidth = config?.paperWidth ?? 80;
-      await printTeste(restaurantName, printerName || "(padrão do sistema)", paperWidth);
+      await printTeste(restaurantName, printerName || "(padrão do sistema)", paperWidth, extraPrinters);
       setTestResult("ok");
       // Depois de um teste bem-sucedido, reflete que o agente está de pé.
       if (!agent) await checkAgent();
@@ -188,7 +220,17 @@ export function ConfiguracaoImpressao() {
             <label className="mb-1 block text-sm font-medium">Impressora</label>
             <select
               value={config.printerName}
-              onChange={(e) => setConfig({ ...config, printerName: e.target.value })}
+              onChange={(e) => {
+                const printerName = e.target.value;
+                setConfig({ ...config, printerName });
+                // Evita imprimir 2x na mesma impressora se ela virar a
+                // principal enquanto ainda estava marcada como extra.
+                if (restaurantId && extraPrinters.includes(printerName)) {
+                  const next = extraPrinters.filter((n) => n !== printerName);
+                  setExtraPrinters(next);
+                  setExtraPrinterNames(restaurantId, next);
+                }
+              }}
               className="w-full rounded-xl border border-border px-3 py-2 text-sm"
             >
               <option value="">Selecione…</option>
@@ -226,16 +268,68 @@ export function ConfiguracaoImpressao() {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium">Cópias por comanda</label>
-            <input
-              type="number"
-              min={1}
-              max={5}
-              value={config.copies}
-              onChange={(e) => setConfig({ ...config, copies: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })}
-              className="w-24 rounded-xl border border-border px-3 py-2 text-sm"
-            />
+            <label className="mb-1 block text-sm font-medium">Quantidade de vias</label>
+            <p className="mb-1.5 text-xs text-muted-foreground">Quantas vezes cada comanda é impressa de uma vez.</p>
+            <div className="flex gap-2">
+              {COPIES_OPTIONS.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setConfig({ ...config, copies: n })}
+                  className={`rounded-full px-4 py-1.5 text-xs font-bold ${
+                    config.copies === n
+                      ? "bg-primary text-primary-foreground"
+                      : "border border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {n}x
+                </button>
+              ))}
+            </div>
           </div>
+
+          {printers.filter((p) => p.name !== config.printerName).length > 0 && (
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <label className="text-sm font-medium">Usar 2 impressoras</label>
+                  <p className="text-xs text-muted-foreground">Imprime a mesma comanda nas duas ao mesmo tempo.</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={useSecondPrinter}
+                  onClick={() => toggleSecondPrinter(!useSecondPrinter)}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                    useSecondPrinter ? "bg-primary" : "bg-muted"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                      useSecondPrinter ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {useSecondPrinter && (
+                <select
+                  value={extraPrinters[0] ?? ""}
+                  onChange={(e) => selectSecondPrinter(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-border px-3 py-2 text-sm"
+                >
+                  <option value="">Selecione a segunda impressora…</option>
+                  {printers
+                    .filter((p) => p.name !== config.printerName)
+                    .map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name} {p.isDefault ? "(padrão do sistema)" : ""}
+                      </option>
+                    ))}
+                </select>
+              )}
+            </div>
+          )}
 
           <label className="flex items-center gap-2 text-sm font-medium">
             <input

@@ -3,19 +3,24 @@ import { Bike, CheckCircle2, ClipboardList, MapPin, Plus, Printer, ShoppingBag, 
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ManualOrderModal } from "../components/ManualOrderModal";
 import { OrderDetailModal } from "../components/OrderDetailModal";
+import { WaiterAssignSelect } from "../components/WaiterAssignSelect";
+import { DeliveryDriverAssignSelect } from "../components/DeliveryDriverAssignSelect";
 import {
   itemTotal,
   nextStatus,
   orderLocationLabel,
+  splitProgress,
   useIncomingOrders,
   STATUS_ORDER,
   type IncomingOrder,
   type OrderStatus,
   type OrderType,
 } from "../lib/orders";
+import { useWaiters, type Waiter } from "../lib/waiters";
+import { useDeliveryDrivers, type DeliveryDriver } from "../lib/deliveryDrivers";
 import { useSession } from "../lib/useSession";
 import { useRestaurantName } from "../lib/restaurant";
-import { describeAgentError, printOrder } from "../lib/printAgent";
+import { describeAgentError, getExtraPrinterNames, printOrder } from "../lib/printAgent";
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   received: "Recebido",
@@ -68,12 +73,20 @@ function staleLevel(order: IncomingOrder): "none" | "warning" | "danger" {
 
 function OrderCard({
   order,
+  waiters,
+  onAssignWaiter,
+  drivers,
+  onAssignDeliveryDriver,
   onAdvance,
   onCancel,
   onDetail,
   onPrint,
 }: {
   order: IncomingOrder;
+  waiters: Waiter[];
+  onAssignWaiter: (waiterId: string) => void;
+  drivers: DeliveryDriver[];
+  onAssignDeliveryDriver: (driverId: string) => void;
   onAdvance: () => void;
   onCancel: () => void;
   onDetail: () => void;
@@ -84,15 +97,29 @@ function OrderCard({
   const alertLevel = staleLevel(order);
   const borderClass =
     alertLevel === "danger" ? "border-destructive" : alertLevel === "warning" ? "border-amber-500" : "border-border";
+  const progress = splitProgress(order);
 
   return (
     <div className={`rounded-xl border ${borderClass} bg-card p-3 shadow-xs`}>
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <ChannelBadge type={order.order_type} />
+        <div className="flex items-center gap-1.5">
+          <ChannelBadge type={order.order_type} />
+          {progress && progress.paid < progress.total && (
+            <span className="inline-flex shrink-0 items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+              {progress.paid} de {progress.total} pagas
+            </span>
+          )}
+        </div>
         <span className="shrink-0 text-[11px] text-muted-foreground">{timeAgo(order.created_at)}</span>
       </div>
-      <div className="mb-1 flex items-center justify-between gap-2">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
         <h4 className="min-w-0 truncate text-sm font-bold">{order.customer_name}</h4>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <WaiterAssignSelect waiters={waiters} waiterId={order.waiter_id} onAssign={onAssignWaiter} />
+          {order.order_type === "delivery" && (
+            <DeliveryDriverAssignSelect drivers={drivers} driverId={order.delivery_driver_id} onAssign={onAssignDeliveryDriver} />
+          )}
+        </div>
       </div>
       <p className="mb-2 border-b border-border pb-2 text-xs text-muted-foreground">
         {orderLocationLabel(order)} · há {timeAgo(order.status_changed_at)} nesse status
@@ -105,8 +132,13 @@ function OrderCard({
 
       {order.order_type === "delivery" && order.delivery_address && (
         <p className="mb-2 flex items-start gap-1 text-xs font-medium text-foreground">
-          <MapPin className="mt-0.5 h-3 w-3 shrink-0" aria-hidden /> {order.delivery_address.text}
+          <MapPin className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          {order.delivery_address.text}
+          {order.neighborhood_name && ` — ${order.neighborhood_name}`}
         </p>
+      )}
+      {order.order_type === "delivery" && order.delivery_driver_name && (
+        <p className="mb-2 text-xs font-medium text-muted-foreground">Motoboy: {order.delivery_driver_name}</p>
       )}
 
       {order.notes && <p className="mb-2 text-xs italic text-muted-foreground">Obs: {order.notes}</p>}
@@ -190,10 +222,23 @@ export function Pedidos() {
   const { profile } = useSession();
   const restaurantId = profile?.restaurant_id ?? null;
   const restaurantName = useRestaurantName(restaurantId);
-  const { orders, loading, advanceStatus, cancelOrder, registerPayment } = useIncomingOrders(restaurantId);
+  const {
+    orders,
+    loading,
+    advanceStatus,
+    cancelOrder,
+    assignWaiter,
+    assignDeliveryDriver,
+    configureSplit,
+    markSplitPaid,
+    voidSplit,
+  } = useIncomingOrders(restaurantId);
+  const { waiters } = useWaiters(restaurantId);
+  const { drivers } = useDeliveryDrivers(restaurantId);
   const [channelFilter, setChannelFilter] = useState<"all" | OrderType>("all");
   const [search, setSearch] = useState("");
   const [cancelling, setCancelling] = useState<IncomingOrder | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [showManualOrder, setShowManualOrder] = useState(false);
   const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
   const [, forceTick] = useState(0);
@@ -217,12 +262,12 @@ export function Pedidos() {
   // derrubar a tela — só avisa, discretamente e por tempo limitado.
   const printOrderTicket = useCallback(
     (order: IncomingOrder) => {
-      printOrder(order, restaurantName).catch((err) => {
+      printOrder(order, restaurantName, getExtraPrinterNames(restaurantId)).catch((err) => {
         setPrintWarning(`Falha ao imprimir comanda de ${order.customer_name}: ${describeAgentError(err)}`);
         setTimeout(() => setPrintWarning(null), 8000);
       });
     },
-    [restaurantName],
+    [restaurantName, restaurantId],
   );
 
   const filtered = useMemo(() => {
@@ -324,6 +369,10 @@ export function Pedidos() {
                       <OrderCard
                         key={order.id}
                         order={order}
+                        waiters={waiters}
+                        onAssignWaiter={(waiterId) => assignWaiter(order.id, waiterId)}
+                        drivers={drivers}
+                        onAssignDeliveryDriver={(driverId) => assignDeliveryDriver(order.id, driverId)}
                         onAdvance={() => {
                           const next = nextStatus(order.status);
                           if (next) advanceStatus(order.id, next);
@@ -354,8 +403,20 @@ export function Pedidos() {
           order={detailOrder}
           restaurantId={restaurantId}
           onClose={() => setDetailOrderId(null)}
-          onRegisterPayment={registerPayment}
+          onConfigureSplit={configureSplit}
+          onMarkSplitPaid={markSplitPaid}
+          onVoidSplit={voidSplit}
+          waiters={waiters}
+          onAssignWaiter={assignWaiter}
+          drivers={drivers}
+          onAssignDeliveryDriver={assignDeliveryDriver}
         />
+      )}
+
+      {cancelError && (
+        <p className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+          {cancelError}
+        </p>
       )}
 
       {cancelling && (
@@ -365,8 +426,12 @@ export function Pedidos() {
           confirmLabel="Cancelar pedido"
           onCancel={() => setCancelling(null)}
           onConfirm={async () => {
-            await cancelOrder(cancelling.id);
+            const result = await cancelOrder(cancelling.id);
             setCancelling(null);
+            if (!result.ok) {
+              setCancelError(result.error ?? "Não foi possível cancelar o pedido");
+              setTimeout(() => setCancelError(null), 8000);
+            }
           }}
         />
       )}

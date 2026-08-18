@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { AlertTriangle, ClipboardList, LayoutDashboard, LogOut, Printer, UtensilsCrossed } from "lucide-react";
+import { AlertTriangle, Bike, ClipboardList, LayoutDashboard, LogOut, Printer, Users, UserRound, UtensilsCrossed } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { useSession } from "../lib/useSession";
 import { useRestaurantName } from "../lib/restaurant";
@@ -10,6 +10,9 @@ const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/cardapio", label: "Cardápio", icon: UtensilsCrossed },
   { to: "/pedidos", label: "Pedidos", icon: ClipboardList },
+  { to: "/garcom", label: "Garçom", icon: UserRound },
+  { to: "/motoboy", label: "Motoboy", icon: Bike },
+  { to: "/clientes", label: "Clientes", icon: Users },
   { to: "/impressora", label: "Impressora", icon: Printer },
 ];
 
@@ -80,7 +83,7 @@ export function RestaurantLayout() {
 
       {/* Navegação de baixo só no celular — dedo alcança fácil, mesmo padrão de apps de POS */}
       <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card md:hidden">
-        <div className="grid grid-cols-4">
+        <div className="grid grid-cols-7">
           {navItems.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}

@@ -66,6 +66,7 @@ export function IngredientsEditor({
             unit: matched.unit,
             cost_per_unit: matched.cost_per_unit,
             quantity_used: quantityUsed,
+            removable: true,
           },
         ]);
       }
@@ -88,6 +89,7 @@ export function IngredientsEditor({
         package_price: packagePrice,
         package_quantity: packageQuantityNum,
         quantity_used: quantityUsed,
+        removable: true,
       },
     ]);
     resetForm();
@@ -100,6 +102,12 @@ export function IngredientsEditor({
   function handleQuantityChange(index: number, rawValue: string) {
     const next = [...lines];
     next[index] = { ...next[index], quantity_used: rawValue === "" ? 0 : Number(rawValue) };
+    onChange(next);
+  }
+
+  function handleToggleRemovable(index: number) {
+    const next = [...lines];
+    next[index] = { ...next[index], removable: !next[index].removable };
     onChange(next);
   }
 
@@ -127,30 +135,55 @@ export function IngredientsEditor({
       <p className="mb-2 text-sm font-semibold">Ingredientes (ficha técnica)</p>
 
       {lines.length > 0 && (
-        <ul className="mb-3 space-y-1.5">
+        <ul className="mb-3 space-y-2">
           {lines.map((line, index) => (
-            <li key={`${line.kind === "existing" ? line.ingredient_id : line.name}-${index}`} className="flex items-center gap-2 text-sm">
-              <span className="min-w-0 flex-1 truncate">{line.name}</span>
-              <div className="flex shrink-0 items-center gap-1">
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  value={line.quantity_used || ""}
-                  onChange={(e) => handleQuantityChange(index, e.target.value)}
-                  aria-label={`Quantidade de ${line.name}`}
-                  className="w-16 rounded-lg border border-border px-1.5 py-1 text-right text-xs"
-                />
-                <span className="text-xs text-muted-foreground">{UNIT_LABEL[line.unit]}</span>
+            <li
+              key={`${line.kind === "existing" ? line.ingredient_id : line.name}-${index}`}
+              className="rounded-lg border border-border p-2"
+            >
+              <div className="flex items-center gap-2 text-sm">
+                <span className="min-w-0 flex-1 truncate">{line.name}</span>
+                <div className="flex shrink-0 items-center gap-1">
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={line.quantity_used || ""}
+                    onChange={(e) => handleQuantityChange(index, e.target.value)}
+                    aria-label={`Quantidade de ${line.name}`}
+                    className="w-16 rounded-lg border border-border px-1.5 py-1 text-right text-xs"
+                  />
+                  <span className="text-xs text-muted-foreground">{UNIT_LABEL[line.unit]}</span>
+                </div>
+                <span className="w-16 shrink-0 text-right text-xs font-semibold">{currency(lineCost(line))}</span>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(index)}
+                  aria-label={`Remover ${line.name}`}
+                  className="shrink-0 rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden />
+                </button>
               </div>
-              <span className="w-16 shrink-0 text-right text-xs font-semibold">{currency(lineCost(line))}</span>
               <button
                 type="button"
-                onClick={() => handleRemove(index)}
-                aria-label={`Remover ${line.name}`}
-                className="shrink-0 rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                role="switch"
+                aria-checked={line.removable}
+                onClick={() => handleToggleRemovable(index)}
+                className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground"
               >
-                <X className="h-3.5 w-3.5" aria-hidden />
+                <span
+                  className={`relative h-4 w-8 shrink-0 rounded-full transition-colors ${
+                    line.removable ? "bg-primary" : "bg-muted-foreground/30"
+                  }`}
+                >
+                  <span
+                    className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                      line.removable ? "translate-x-4" : "translate-x-0"
+                    }`}
+                  />
+                </span>
+                {line.removable ? "Cliente pode remover esse ingrediente" : "Cliente não pode remover esse ingrediente"}
               </button>
             </li>
           ))}
