@@ -28,3 +28,5 @@ dist-ssr
 
 # Supabase CLI local state (project link cache, not project config)
 supabase/.temp/
+.vercel
+.env*
