@@ -1,4 +1,4 @@
-import { ArrowLeft, Search, ShoppingCart } from "lucide-react";
+import { ArrowLeft, Search, ShoppingCart, User } from "lucide-react";
 
 // Header muda de cara ao rolar a página (ou ao tocar na lupa): em vez da
 // logo/nome cortados pela metade quando o topo já saiu de vista, mostra uma
@@ -9,6 +9,7 @@ export function Header({
   logoUrl,
   cartCount,
   onCartClick,
+  onAccountClick,
   showSearch,
   searchQuery,
   onSearchChange,
@@ -19,6 +20,7 @@ export function Header({
   logoUrl: string | null;
   cartCount: number;
   onCartClick: () => void;
+  onAccountClick: () => void;
   showSearch: boolean;
   searchQuery: string;
   onSearchChange: (value: string) => void;
@@ -75,6 +77,14 @@ export function Header({
             </button>
           </>
         )}
+        <button
+          type="button"
+          aria-label="Minha conta"
+          onClick={onAccountClick}
+          className="press grid h-11 w-11 shrink-0 place-items-center rounded-full hover:bg-muted"
+        >
+          <User className="h-5 w-5" aria-hidden />
+        </button>
         <button
           type="button"
           aria-label="Carrinho"

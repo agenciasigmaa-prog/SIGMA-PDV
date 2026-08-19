@@ -9,6 +9,7 @@ import { Configuracoes } from "./pages/Configuracoes";
 import { Dashboard } from "./pages/Dashboard";
 import { Garcom } from "./pages/Garcom";
 import { Login } from "./pages/Login";
+import { Marketing } from "./pages/Marketing";
 import { Motoboy } from "./pages/Motoboy";
 import { Pedidos } from "./pages/Pedidos";
 import { Welcome } from "./pages/Welcome";
@@ -32,6 +33,7 @@ function App() {
         <Route path="/garcom" element={<Garcom />} />
         <Route path="/motoboy" element={<Motoboy />} />
         <Route path="/clientes" element={<Clientes />} />
+        <Route path="/marketing" element={<Marketing />} />
         <Route path="/impressora" element={<ConfiguracaoImpressao />} />
         <Route path="/configuracoes" element={<Configuracoes />} />
       </Route>

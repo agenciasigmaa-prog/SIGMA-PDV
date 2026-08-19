@@ -140,7 +140,7 @@ function OrderCard({
       {order.order_type === "delivery" && order.delivery_driver_name && (
         <p className="mb-2 text-xs font-medium text-muted-foreground">Motoboy: {order.delivery_driver_name}</p>
       )}
-      {order.order_type === "delivery" && order.payment_method === "cash" && (
+      {(order.order_type === "delivery" || order.order_type === "dine_in") && order.payment_method === "cash" && (
         <p className="mb-2 text-xs font-medium text-muted-foreground">
           Dinheiro{order.change_for != null ? ` — troco para ${currency(order.change_for)}` : ""}
         </p>

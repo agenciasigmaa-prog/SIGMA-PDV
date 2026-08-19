@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { supabase } from "./supabase";
+import { initMetaPixel } from "./metaPixel";
 
 type RestaurantInfo = {
   restaurantId: string;
@@ -8,6 +9,7 @@ type RestaurantInfo = {
   faviconUrl: string | null;
   primaryColor: string | null;
   orderingEnabled: boolean;
+  metaPixelId: string | null;
 };
 
 const RestaurantContext = createContext<RestaurantInfo | null>(null);
@@ -44,7 +46,9 @@ export function TableProvider({
     setState("loading");
     supabase
       .from("restaurants")
-      .select("id, name, ordering_enabled, restaurant_branding(display_name, logo_url, favicon_url, primary_color)")
+      .select(
+        "id, name, ordering_enabled, restaurant_branding(display_name, logo_url, favicon_url, primary_color, meta_pixel_id)",
+      )
       .eq(lookupColumn, lookupValue)
       .maybeSingle()
       .then(({ data }) => {
@@ -57,6 +61,7 @@ export function TableProvider({
           logo_url: string | null;
           favicon_url: string | null;
           primary_color: string | null;
+          meta_pixel_id: string | null;
         } | null;
         setInfo({
           restaurantId: data.id,
@@ -65,10 +70,18 @@ export function TableProvider({
           faviconUrl: branding?.favicon_url ?? null,
           primaryColor: branding?.primary_color ?? null,
           orderingEnabled: data.ordering_enabled,
+          metaPixelId: branding?.meta_pixel_id ?? null,
         });
         setState("ready");
       });
   }, [lookupColumn, lookupValue]);
+
+  // Pixel carrega assim que o restaurante resolve — mede visitas ao cardápio
+  // (PageView) pra quem chegou via anúncio; a conversão de verdade
+  // ("Purchase") dispara em MesaCardapio.tsx na confirmação do pedido.
+  useEffect(() => {
+    if (info?.metaPixelId) initMetaPixel(info.metaPixelId);
+  }, [info?.metaPixelId]);
 
   // Aplica a cor da marca só enquanto esse restaurante está montado — some se
   // sair pra uma tela sem contexto de restaurante.

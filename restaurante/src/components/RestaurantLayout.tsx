@@ -6,6 +6,7 @@ import {
   ClipboardList,
   LayoutDashboard,
   LogOut,
+  Megaphone,
   Menu,
   Printer,
   Settings,
@@ -34,6 +35,7 @@ const primaryNavItems = [
 ];
 
 const secondaryNavItems = [
+  { to: "/marketing", label: "Marketing", icon: Megaphone },
   { to: "/impressora", label: "Impressora", icon: Printer },
   { to: "/configuracoes", label: "Configurações", icon: Settings },
 ];

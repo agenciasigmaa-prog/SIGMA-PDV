@@ -440,16 +440,21 @@ Deno.serve(async (req) => {
     // serviço), pra transparência de quanto é comida e quanto é entrega.
     const total = itemsSubtotal + delivery_fee_amount;
 
-    // Troco só existe pra delivery em dinheiro, e nunca pode ser menor que o
-    // total (senão não sobra troco nenhum pra dar) — validado aqui, depois
-    // que o total já foi recalculado no servidor, nunca confia no client.
-    if (order_type === "delivery" && requestedChangeFor != null && requestedChangeFor < total) {
+    // Troco existe pra delivery e mesa em dinheiro (retirada não pergunta
+    // forma de pagamento hoje), e nunca pode ser menor que o total (senão
+    // não sobra troco nenhum pra dar) — validado aqui, depois que o total já
+    // foi recalculado no servidor, nunca confia no client.
+    if (
+      (order_type === "delivery" || order_type === "dine_in") &&
+      requestedChangeFor != null &&
+      requestedChangeFor < total
+    ) {
       return new Response(
         JSON.stringify({ error: "O troco pedido precisa ser maior ou igual ao total do pedido" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
-    const change_for = order_type === "delivery" ? requestedChangeFor : null;
+    const change_for = order_type === "delivery" || order_type === "dine_in" ? requestedChangeFor : null;
 
     // Código de retirada: 4 dígitos, sequencial por dia por restaurante —
     // conta quantos pedidos "pickup" esse restaurante já teve hoje e usa

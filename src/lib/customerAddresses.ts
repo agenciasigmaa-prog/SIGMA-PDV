@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
+import { Briefcase, Home, MapPin } from "lucide-react";
 import { supabase } from "./supabase";
 
 export type CustomerAddress = { id: string; label: string | null; address_text: string };
+
+// "Casa"/"Trabalho" ganham ícone próprio; qualquer outro nome (ou sem nome)
+// cai no pin genérico — usado tanto no checkout (CartDrawer) quanto no
+// Perfil (CustomerProfileSheet), pra não duplicar essa lógica nos dois.
+export function addressIcon(label: string | null) {
+  const normalized = (label ?? "").trim().toLowerCase();
+  if (normalized === "casa") return Home;
+  if (normalized === "trabalho") return Briefcase;
+  return MapPin;
+}
 
 // Endereços do próprio cliente logado (RLS: customer_addresses_own, cada um
 // só vê/mexe no que é seu) — reaproveitável em qualquer restaurante, já que
@@ -34,16 +45,30 @@ export function useCustomerAddresses() {
 
   // Chamado depois que o pedido é confirmado com um endereço novo digitado —
   // fica salvo pra próxima vez, sem precisar de uma tela separada de
-  // "gerenciar endereços".
-  async function saveAddress(addressText: string): Promise<void> {
+  // "gerenciar endereços". Label é opcional (o cliente pode nomear no
+  // checkout, ex. "Casa"/"Trabalho", ou deixar sem nome).
+  async function saveAddress(addressText: string, label?: string | null): Promise<void> {
     const { data: session } = await supabase.auth.getSession();
     if (!session.session) return;
     const trimmed = addressText.trim();
     if (!trimmed) return;
     const alreadySaved = addresses.some((a) => a.address_text.trim().toLowerCase() === trimmed.toLowerCase());
     if (alreadySaved) return;
-    await supabase.from("customer_addresses").insert({ customer_id: session.session.user.id, address_text: trimmed });
+    await supabase
+      .from("customer_addresses")
+      .insert({ customer_id: session.session.user.id, address_text: trimmed, label: label?.trim() || null });
   }
 
-  return { addresses, loading, reload: load, saveAddress };
+  // Renomear/editar um endereço já salvo — usado na tela de Perfil. Confia
+  // na RLS (customer_addresses_own) pra garantir que só o dono edita o
+  // próprio endereço, sem checar customer_id de novo aqui.
+  async function updateAddress(id: string, patch: { label?: string | null; address_text?: string }): Promise<void> {
+    await supabase.from("customer_addresses").update(patch).eq("id", id);
+  }
+
+  async function deleteAddress(id: string): Promise<void> {
+    await supabase.from("customer_addresses").delete().eq("id", id);
+  }
+
+  return { addresses, loading, reload: load, saveAddress, updateAddress, deleteAddress };
 }

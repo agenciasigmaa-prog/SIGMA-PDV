@@ -27,6 +27,7 @@ export function ProductDetailSheet({
   product,
   groups,
   halfAndHalf,
+  initialHalfFlavorId,
   comboChoiceGroups,
   removableIngredients,
   onClose,
@@ -35,6 +36,12 @@ export function ProductDetailSheet({
   product: Product;
   groups: { group: AddonGroup; addons: Addon[] }[];
   halfAndHalf?: { pricingMode: HalfAndHalfPricingMode; options: Product[] };
+  // Vem do popup "inteira ou meio a meio?" (HalfAndHalfChoiceDialog), que já
+  // roda ANTES dessa ficha abrir quando a categoria permite — chega aqui só
+  // pra pré-marcar o sabor escolhido lá. A seção "Meio a meio" continua
+  // visível e editável aqui, caso a pessoa queira trocar de sabor sem
+  // reabrir o popup inteiro.
+  initialHalfFlavorId?: string | null;
   comboChoiceGroups?: { id: string; name: string; options: Product[] }[];
   removableIngredients?: RemovableIngredient[];
   onClose: () => void;
@@ -47,7 +54,7 @@ export function ProductDetailSheet({
   }) => void;
 }) {
   const [selected, setSelected] = useState<Record<string, number>>({});
-  const [halfFlavorId, setHalfFlavorId] = useState<string | null>(null);
+  const [halfFlavorId, setHalfFlavorId] = useState<string | null>(initialHalfFlavorId ?? null);
   const [choiceSelections, setChoiceSelections] = useState<Record<string, string>>({});
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [quantity, setQuantity] = useState(1);

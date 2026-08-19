@@ -8,7 +8,7 @@ Uma agência (**ADM**) gerencia vários restaurantes (**tenants**). Cada restaur
 
 - **`admin`** — time da agência, acessa o painel `admin/`, enxerga todos os tenants.
 - **`restaurant_owner` / `restaurant_staff`** — equipe do restaurante, acessa `restaurante/`, só enxerga o próprio tenant.
-- **`customer`** — cliente final, criado automaticamente por um trigger (`handle_new_user`) em qualquer signup, **inclusive login anônimo** (é assim que o cliente do cardápio público entra — ver seção 1). Nunca é atribuído manualmente.
+- **`customer`** — cliente final, criado automaticamente por um trigger (`handle_new_user`) em qualquer cadastro (e-mail/senha ou Google) — é assim que o cliente do cardápio público entra, ver seção 1. Nunca é atribuído manualmente.
 
 Ninguém sobe de papel sozinho: `restaurant_owner` só nasce pelo fluxo de convite do admin, e `admin` não é auto-atribuível — isso é garantido por RLS e por um trigger (`prevent_role_escalation`) que bloqueia `UPDATE` em `profiles.role` fora dos caminhos controlados.
 
@@ -32,25 +32,29 @@ No topo, um **carrossel de banners promocionais** (se o restaurante tiver algum 
 
 ### Personalizando um item
 
-Produtos simples ganham um botão de +/− direto no card. Produtos que exigem alguma escolha (adicional, meio a meio, "escolha seu X" de um combo, ou ingrediente removível) abrem uma folha de personalização com, nesta ordem:
+Produtos simples ganham um botão de +/− direto no card. Se a categoria do produto permite meio a meio (e tem pelo menos outro produto pra combinar), tocar no card não abre a folha de personalização direto — primeiro pergunta **"inteira ou meio a meio?"**: escolhendo inteira, segue pro normal; escolhendo meio a meio, mostra a lista de outros produtos da mesma categoria (nunca o próprio item tocado — meio a meio do mesmo sabor duas vezes não faz sentido) pra escolher o segundo sabor antes de abrir a folha, já com esse sabor marcado.
 
-- **Meio a meio** (quando a categoria permite): metade de um sabor, metade de outro produto da mesma categoria — o preço final é calculado pela regra da categoria (o mais caro dos dois, ou a média).
+Produtos que exigem alguma escolha (adicional, meio a meio, "escolha seu X" de um combo, ou ingrediente removível) abrem uma folha de personalização com, nesta ordem:
+
+- **Meio a meio** (quando a categoria permite): metade de um sabor, metade de outro produto da mesma categoria — o preço final é calculado pela regra da categoria (o mais caro dos dois, ou a média). Continua editável aqui mesmo depois de escolhido no popup inicial, caso a pessoa mude de ideia sobre o sabor.
 - **Grupos de escolha de combo** ("escolha seu hambúrguer"): uma opção obrigatória por grupo, sem alterar o preço.
 - **Grupos de adicionais**: com ou sem quantidade por adicional, marcados como obrigatórios quando o restaurante exige pelo menos um.
 - **Remover ingredientes**: toggle por ingrediente, sem efeito no preço.
 
 O botão de confirmar só libera quando toda escolha obrigatória foi feita — se faltar algo, aparece qual grupo ainda precisa de seleção.
 
-### Carrinho e confirmação — sem tela de login
+### Carrinho, cadastro e confirmação
 
-O carrinho é 100% local (guardado por restaurante) até o cliente tocar em "Confirmar pedido". Ali o cliente só digita o **nome** e o **número da mesa** — texto livre, sem cadastro. Ao confirmar:
+O carrinho é 100% local (guardado por restaurante) até o cliente confirmar de verdade. **Tocar no ícone da sacola já pede login se ainda não tiver conta real** — não só na hora de confirmar: montar o pedido todo pra só pedir login no fim faria a plataforma perder o lead inteiro se a pessoa desistisse antes desse último passo, então o cadastro/login (nome/e-mail/senha/telefone, ou "Continuar com Google") acontece assim que a sacola é aberta. A partir daí o **nome já vem preenchido** do perfil (ainda dá pra editar, ex. pedindo pra outra pessoa na mesma mesa) e, se o cliente já tiver um endereço salvo, o carrinho de delivery abre direto no resumo compacto desse endereço (ícone + "Trocar") em vez de forçar escolher de novo — e se aquele mesmo endereço já foi usado nesse restaurante antes, o **bairro também vem pré-selecionado**, lembrado do pedido anterior. **Forma de pagamento (com opção de troco pra dinheiro) é perguntada pra mesa também, não só delivery** — antes só aparecia no fluxo de entrega.
+
+Ao tocar em "Revisar pedido":
 
 1. O app confere se algum preço mudou desde que o item entrou no carrinho (reconsulta o banco). Se mudou, ou se algum produto saiu do ar, mostra um aviso com o que mudou antes de deixar enviar — o cliente decide se revê o carrinho ou segue com os valores atualizados.
-2. Se está tudo certo, o app garante uma sessão via **login anônimo** do Supabase (`signInAnonymously`), sem nenhuma tela de login aparecer — é só um jeito de o pedido ter um `customer_id` válido pro backend aceitar. (Chegou-se a tentar login por Google antes disso, mas o provedor nunca foi de fato habilitado no projeto; login anônimo resolveu sem fricção nenhuma pro cliente.)
+2. Sem mudança de preço, abre uma tela de **revisão** (resumo só de leitura: itens, mesa/endereço, pagamento, cliente, total, e "Economia de R$ X" quando algum item está em promoção) com "Voltar" pra editar ou "Confirmar pedido" pra enviar de verdade.
 3. O pedido é enviado pra Edge Function `place-dine-in-order`.
 4. Sucesso mostra uma tela cheia de confirmação ("Pedido enviado!"); falha mostra o erro dentro do próprio carrinho, que continua aberto pra tentar de novo.
 
-Não existe conta de cliente, histórico de pedidos anteriores nem tela de perfil — o pedido é "indexado" só pelo nome e mesa que a pessoa digitou naquela hora.
+O ícone de conta no topo do cardápio abre a tela de **Perfil**: nome, telefone, trocar senha, e endereços de entrega salvos (cada um com um nome escolhido pelo cliente, tipo "Casa"/"Trabalho", com o ícone correspondente) — que também dá pra nomear direto no checkout, na hora de digitar um endereço novo. Sem foto de perfil. O cadastro vale em qualquer restaurante da plataforma (não é por tenant).
 
 ### Envio do pedido — Edge Function `place-dine-in-order`
 
@@ -60,7 +64,7 @@ O carrinho nunca vira `INSERT` direto do navegador — o preço **nunca pode vir
 2. Recalcula cada preço a partir do banco (produto, adicional, meio a meio pela mesma fórmula do frontend, validade de cada escolha de combo e de cada ingrediente removível) — nada do que o cliente mandou é usado pra cobrar.
 3. Grava `orders` (`order_type: 'dine_in'`, `status: 'received'`, `payment_status: 'pending'`) e todos os relacionamentos de item.
 
-Exige um JWT válido (`verify_jwt: true`) — o login anônimo do passo anterior é justamente pra isso. Essa mesma function também é o caminho usado pela equipe do restaurante pra lançar pedidos manuais de retirada e entrega (ver seção 2) — hoje só o cardápio público de mesa usa esse fluxo de ponta a ponta; retirada e entrega feitas pelo próprio cliente ainda não existem no cardápio público.
+Exige um JWT válido (`verify_jwt: true`) — o cadastro/login do passo anterior é justamente pra isso. Essa mesma function também é o caminho usado pela equipe do restaurante pra lançar pedidos manuais de mesa, retirada e entrega (ver seção 2), e é o que o próprio cliente usa pra pedir mesa, retirada ou entrega direto pelo cardápio público.
 
 ---
 
@@ -111,6 +115,10 @@ Cada card mostra o canal, há quanto tempo o pedido chegou, o cliente, onde entr
 
 O ícone de detalhes abre um painel onde a equipe pode adicionar/remover item, editar desconto e taxa de serviço (sempre recalculados do zero a partir do banco, nunca incrementalmente — via a Edge Function `staff-edit-order`), registrar a forma de pagamento (dinheiro/cartão/PIX) e escrever uma observação do pedido. Cada pedido novo toca um som diferente conforme o canal.
 
+### Marketing (`/marketing`)
+
+Duas coisas, sem depender uma da outra: um campo pra colar o **ID do Pixel do Meta** (Facebook/Instagram Ads) — assim que salvo, o cardápio público desse restaurante carrega o pixel e avisa o Meta em dois momentos: quando o cliente toca "Revisar pedido" (sinal de que está prestes a comprar) e quando o pedido é realmente confirmado (a venda em si), pra otimizar o anúncio pra quem compra, não só quem visita a página; e um **gerador de link**, com dois usos: "Tráfego pago" gera um link que abre o cardápio já no fluxo de delivery, sem perguntar "como você quer receber?" — bom pra colar no anúncio; "Mesa" gera um link com o número da mesa preenchido, bom pra colar num adesivo/QR code físico da mesa.
+
 ### Impressora (`/impressora`)
 
 Configuração do **agente de impressão local** (ver seção 5): detecta se o agente está rodando na máquina, oferece o instalador pra baixar direto da tela, permite escolher a impressora/largura do papel/número de cópias, ligar a impressão automática, e imprimir uma página de teste.
@@ -160,7 +168,7 @@ As últimas 200 linhas de `admin_action_log` (com o nome do restaurante já reso
 | `admin-set-account-status` | admin | sim |
 | `check-invite` | público (tela de cadastro) | não |
 | `complete-invite` | público (tela de cadastro) | não |
-| `place-dine-in-order` | cliente (login anônimo) ou equipe do restaurante | sim |
+| `place-dine-in-order` | cliente (cadastro real) ou equipe do restaurante | sim |
 | `staff-edit-order` | equipe do restaurante | sim |
 
 **Storage**: bucket `menu-images` (público pra leitura, escrita restrita por pasta de tenant) — guarda imagens de produto, categoria, marca (logo/favicon) e banners promocionais.

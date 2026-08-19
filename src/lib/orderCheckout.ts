@@ -6,6 +6,7 @@ export type PaymentMethod = "cash" | "card" | "pix";
 export type DeliveryDetails = {
   addressText: string;
   selectedSavedAddressId: string | null; // null = está preenchendo endereço novo
+  newAddressLabel: string; // nome opcional pro endereço novo (ex. "Casa"/"Trabalho")
   neighborhoodId: string;
   paymentMethod: PaymentMethod | null;
   wantsChange: boolean;
@@ -16,6 +17,7 @@ export function emptyDeliveryDetails(): DeliveryDetails {
   return {
     addressText: "",
     selectedSavedAddressId: null,
+    newAddressLabel: "",
     neighborhoodId: "",
     paymentMethod: null,
     wantsChange: false,

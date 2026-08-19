@@ -15,9 +15,22 @@ function storageKey(restaurantId: string) {
   return `sigma:order-channel:${restaurantId}`;
 }
 
-function readStored(restaurantId: string): OrderType | null {
+function isOrderType(value: string | null): value is OrderType {
+  return value === "dine_in" || value === "pickup" || value === "delivery";
+}
+
+// "?canal=delivery" na URL (link gerado na aba Marketing pro tráfego pago)
+// pula a tela de escolha — quem clicou o anúncio já veio pra pedir delivery,
+// perguntar de novo só adiciona atrito. Prioridade sobre o que já estava
+// salvo na sessão, já que um link novo é uma intenção nova.
+function readInitial(restaurantId: string): OrderType | null {
+  const fromUrl = new URLSearchParams(window.location.search).get("canal");
+  if (isOrderType(fromUrl)) {
+    sessionStorage.setItem(storageKey(restaurantId), fromUrl);
+    return fromUrl;
+  }
   const stored = sessionStorage.getItem(storageKey(restaurantId));
-  return stored === "dine_in" || stored === "pickup" || stored === "delivery" ? stored : null;
+  return isOrderType(stored) ? stored : null;
 }
 
 const CHANNEL_OPTIONS: { type: OrderType; label: string; description: string; icon: typeof Utensils }[] = [
@@ -42,7 +55,7 @@ export function OrderChannelGate({
   logoUrl: string | null;
   children: ReactNode;
 }) {
-  const [orderType, setOrderType] = useState<OrderType | null>(() => readStored(restaurantId));
+  const [orderType, setOrderType] = useState<OrderType | null>(() => readInitial(restaurantId));
 
   function selectChannel(type: OrderType) {
     sessionStorage.setItem(storageKey(restaurantId), type);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { Header } from "../components/Header";
 import { CategoryTabs } from "../components/CategoryTabs";
@@ -8,8 +8,11 @@ import { PromoCarousel } from "../components/PromoCarousel";
 import { CartDrawer } from "../components/CartDrawer";
 import { PriceChangeDialog } from "../components/PriceChangeDialog";
 import { ProductDetailSheet } from "../components/ProductDetailSheet";
+import { HalfAndHalfChoiceDialog } from "../components/HalfAndHalfChoiceDialog";
 import { CustomerAuthModal } from "../components/CustomerAuthModal";
+import { CustomerProfileSheet } from "../components/CustomerProfileSheet";
 import { useTableContext } from "../lib/TableContext";
+import { useSession } from "../lib/useSession";
 import { useOrderChannel } from "../lib/OrderChannelContext";
 import { useMenu } from "../lib/useMenu";
 import { useCart, type CartAddon, type CartComboChoice, type CartHalfFlavor } from "../lib/CartContext";
@@ -18,6 +21,7 @@ import { emptyDeliveryDetails, type DeliveryDetails } from "../lib/orderCheckout
 import { supabase } from "../lib/supabase";
 import { describeFunctionError } from "../lib/functionError";
 import { checkCartPrices, type CartPriceCheckResult } from "../lib/cartPriceCheck";
+import { trackPurchase } from "../lib/metaPixel";
 import type { Addon, AddonGroup } from "../lib/addons";
 import type { PromoBanner } from "../lib/promoBanners";
 import type { Product } from "../lib/menu";
@@ -32,6 +36,7 @@ export function MesaCardapio() {
   const { restaurantId, restaurantName, logoUrl } = useTableContext();
   const orderType = useOrderChannel();
   const { addresses: savedAddresses, saveAddress } = useCustomerAddresses();
+  const { isRealCustomer, profile } = useSession();
   const {
     categories,
     products,
@@ -50,19 +55,33 @@ export function MesaCardapio() {
   const [checkingPrices, setCheckingPrices] = useState(false);
   const [priceCheck, setPriceCheck] = useState<CartPriceCheckResult | null>(null);
   const [pickerProduct, setPickerProduct] = useState<Product | null>(null);
+  // Produto aguardando a escolha "inteira ou meio a meio?" (popup separado,
+  // antes da ficha normal) — e o sabor já escolhido lá, só pra pré-marcar a
+  // seção "Meio a meio" quando a ficha abrir.
+  const [halfAndHalfPrompt, setHalfAndHalfPrompt] = useState<Product | null>(null);
+  const [initialHalfFlavorId, setInitialHalfFlavorId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
   // Digitados pelo cliente na hora de confirmar — não existe mais mesa fixa
   // vinda de QR. Texto livre, sem validar contra nada (decisão explícita).
+  // "?mesa=" na URL (link gerado na aba Marketing pra colar num adesivo de
+  // mesa) pré-preenche esse campo — lido só uma vez, no primeiro valor de
+  // useState, não via useEffect: assim não sobrescreve o que o cliente já
+  // tiver digitado se o componente re-renderizar.
   const [customerName, setCustomerName] = useState("");
-  const [tableLabel, setTableLabel] = useState("");
+  const [tableLabel, setTableLabel] = useState(() => new URLSearchParams(window.location.search).get("mesa") ?? "");
   const [deliveryDetails, setDeliveryDetails] = useState<DeliveryDetails>(emptyDeliveryDetails);
   // Dado do último pedido confirmado, só o necessário pra mensagem de
   // confirmação variar por canal (mesa/código de retirada/endereço).
   const [lastOrderInfo, setLastOrderInfo] = useState<{ tableLabel: string; pickupCode: string | null; address: string } | null>(
     null,
   );
-  const [showAuthGate, setShowAuthGate] = useState(false);
+  // O que fazer depois de logar: veio do checkout (então submete o pedido
+  // na sequência) ou veio do botão de conta no Header (então só abre o
+  // Perfil) — sem isso, logar pelo botão de conta dispararia submitOrder()
+  // por engano.
+  const [authIntent, setAuthIntent] = useState<"checkout" | "profile" | "cart" | null>(null);
+  const [showProfile, setShowProfile] = useState(false);
   // Categoria destacada nas abas fixas — segue a seção mais visível ao rolar
   // (scroll-spy), não uma tela separada. "outros" é o id sintético dos
   // produtos sem categoria.
@@ -178,6 +197,67 @@ export function MesaCardapio() {
       ? (savedAddresses.find((a) => a.id === deliveryDetails.selectedSavedAddressId)?.address_text ?? "")
       : deliveryDetails.addressText.trim();
 
+  // Pré-seleciona o endereço salvo mais recente assim que a lista carrega,
+  // pra abrir o carrinho de delivery direto no resumo compacto (com
+  // "Trocar") em vez de forçar o cliente a tocar em "Novo endereço" toda
+  // vez. Só roda uma vez (ref) e só se nada foi tocado ainda — depois que o
+  // cliente escolhe "Novo endereço" (que também zera selectedSavedAddressId)
+  // a ref já vai ter disparado antes disso na prática, já que os endereços
+  // carregam no mount, bem antes do carrinho ser aberto.
+  const addressDefaultAppliedRef = useRef(false);
+  useEffect(() => {
+    if (addressDefaultAppliedRef.current) return;
+    if (orderType !== "delivery" || savedAddresses.length === 0) return;
+    addressDefaultAppliedRef.current = true;
+    if (deliveryDetails.selectedSavedAddressId != null) return;
+    if (deliveryDetails.addressText !== "" || deliveryDetails.newAddressLabel !== "") return;
+    setDeliveryDetails((prev) => ({ ...prev, selectedSavedAddressId: savedAddresses[0].id }));
+  }, [savedAddresses, orderType, deliveryDetails]);
+
+  // Cliente logado não devia precisar digitar o próprio nome de novo — puxa
+  // do perfil assim que carrega. Continua editável (pedido pra outra pessoa
+  // na mesma mesa, por exemplo), só não força digitar do zero toda vez.
+  useEffect(() => {
+    if (profile?.full_name && !customerName) setCustomerName(profile.full_name);
+  }, [profile, customerName]);
+
+  // Bairro não fica gravado no endereço salvo (ele é global, reaproveitável
+  // em qualquer restaurante — cada restaurante tem seus próprios bairros e
+  // taxas). Mas dá pra lembrar qual foi o último bairro usado PARA ESSE
+  // restaurante com ESSE endereço, puxando do pedido anterior — evita
+  // escolher nesse dropdown de novo toda vez que o mesmo endereço é
+  // reutilizado no mesmo restaurante. Só dispara quando o endereço
+  // selecionado muda (troca de endereço ou pré-seleção inicial), nunca
+  // sozinho depois que o cliente já escolheu o bairro manualmente pra essa
+  // mesma seleção.
+  const lastNeighborhoodLookupIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (orderType !== "delivery") return;
+    const addressId = deliveryDetails.selectedSavedAddressId;
+    if (addressId === lastNeighborhoodLookupIdRef.current) return;
+    lastNeighborhoodLookupIdRef.current = addressId;
+    if (!addressId) return;
+    const address = savedAddresses.find((a) => a.id === addressId);
+    if (!address) return;
+    let cancelled = false;
+    supabase
+      .from("orders")
+      .select("neighborhood_id")
+      .eq("restaurant_id", restaurantId)
+      .eq("delivery_address->>text", address.address_text)
+      .not("neighborhood_id", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled || !data?.neighborhood_id) return;
+        setDeliveryDetails((prev) => (prev.selectedSavedAddressId === addressId ? { ...prev, neighborhoodId: data.neighborhood_id as string } : prev));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deliveryDetails.selectedSavedAddressId, orderType, savedAddresses, restaurantId]);
+
   async function submitOrder() {
     setSubmitting(true);
     setError(null);
@@ -187,14 +267,21 @@ export function MesaCardapio() {
         customer_name: customerName,
         order_type: orderType,
         table_label: orderType === "dine_in" ? tableLabel : undefined,
-        ...(orderType === "delivery"
+        // Pagamento é perguntado pra mesa também, não só delivery — payload
+        // precisa mandar payment_method/change_for nos dois casos, senão a
+        // resposta do usuário no formulário nunca chega no servidor.
+        ...(orderType === "delivery" || orderType === "dine_in"
           ? {
-              delivery_address: resolvedAddressText,
-              neighborhood_id: deliveryDetails.neighborhoodId,
               payment_method: deliveryDetails.paymentMethod,
               ...(deliveryDetails.wantsChange && deliveryDetails.changeFor
                 ? { change_for: Number(deliveryDetails.changeFor) }
                 : {}),
+            }
+          : {}),
+        ...(orderType === "delivery"
+          ? {
+              delivery_address: resolvedAddressText,
+              neighborhood_id: deliveryDetails.neighborhoodId,
             }
           : {}),
         items: items.map((item) => ({
@@ -218,9 +305,14 @@ export function MesaCardapio() {
     }
     // Endereço novo (não escolhido de um já salvo) fica guardado pra próxima
     // vez — não bloqueia a confirmação do pedido se falhar por algum motivo.
+    // Nome do endereço (Casa/Trabalho/...) é opcional, escolhido no checkout.
     if (orderType === "delivery" && deliveryDetails.selectedSavedAddressId == null) {
-      saveAddress(resolvedAddressText);
+      saveAddress(resolvedAddressText, deliveryDetails.newAddressLabel);
     }
+    // Conversão de verdade pro Meta Pixel (não só PageView) — o que deixa o
+    // anúncio ser otimizado pra quem realmente pede, não só quem visita.
+    // Sem efeito se o restaurante não tem pixel configurado (aba Marketing).
+    trackPurchase(data.total as number);
     clear();
     setCartOpen(false);
     setOrderId(data.order_id as string);
@@ -243,10 +335,8 @@ export function MesaCardapio() {
   // verdade — sessão anônima antiga que ainda esteja em localStorage não
   // conta como "logado" aqui.
   async function goToLoginOrSubmit() {
-    const { data } = await supabase.auth.getSession();
-    const hasRealSession = !!data.session && data.session.user.is_anonymous === false;
-    if (!hasRealSession) {
-      setShowAuthGate(true);
+    if (!isRealCustomer) {
+      setAuthIntent("checkout");
       return;
     }
     await submitOrder();
@@ -289,9 +379,33 @@ export function MesaCardapio() {
 
   // Toque em qualquer parte da linha do produto abre a ficha (foto,
   // descrição, customização e quantidade) — não tem mais +/- direto na
-  // lista, mesma lógica pra produto simples ou com adicionais.
+  // lista, mesma lógica pra produto simples ou com adicionais. Categoria com
+  // meio a meio ativo (e pelo menos outro produto pra combinar) pergunta
+  // "inteira ou meio a meio?" ANTES de abrir a ficha, em vez de deixar essa
+  // escolha só como mais uma seção dentro dela.
   function handleOpenDetail(product: Product) {
-    setPickerProduct(product);
+    const category = categoriesById.get(product.category_id ?? "");
+    const hasHalfAndHalfOptions =
+      !!category?.allow_half_and_half &&
+      products.some((p) => p.category_id === product.category_id && p.id !== product.id);
+    if (hasHalfAndHalfOptions) {
+      setHalfAndHalfPrompt(product);
+    } else {
+      setPickerProduct(product);
+    }
+  }
+
+  function handleChooseWhole() {
+    const product = halfAndHalfPrompt;
+    setHalfAndHalfPrompt(null);
+    if (product) setPickerProduct(product);
+  }
+
+  function handleChooseHalf(flavor: Product) {
+    const product = halfAndHalfPrompt;
+    setHalfAndHalfPrompt(null);
+    setInitialHalfFlavorId(flavor.id);
+    if (product) setPickerProduct(product);
   }
 
   function handlePickerConfirm({
@@ -309,6 +423,7 @@ export function MesaCardapio() {
   }) {
     if (pickerProduct) addItem(pickerProduct, { addons, halfFlavor, comboChoices, removedIngredients, quantity });
     setPickerProduct(null);
+    setInitialHalfFlavorId(null);
   }
 
   function handleIncrement(lineId: string) {
@@ -321,13 +436,27 @@ export function MesaCardapio() {
     if (line) setQuantity(lineId, line.quantity - 1);
   }
 
+  // Login exigido já ao ABRIR a sacola, não só na hora de confirmar — decisão
+  // explícita: deixar a pessoa montar o pedido todo e só pedir login no fim
+  // significa perder o lead se ela desistir antes de logar. Pedindo aqui, o
+  // cadastro/login acontece cedo e os dados (nome, endereços salvos) já
+  // ficam disponíveis pro resto da jornada.
+  function handleCartClick() {
+    if (!isRealCustomer) {
+      setAuthIntent("cart");
+      return;
+    }
+    setCartOpen(true);
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <Header
         restaurantName={restaurantName}
         logoUrl={logoUrl}
         cartCount={totalCount}
-        onCartClick={() => setCartOpen(true)}
+        onCartClick={handleCartClick}
+        onAccountClick={() => (isRealCustomer ? setShowProfile(true) : setAuthIntent("profile"))}
         showSearch={showSearchBar}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -393,7 +522,7 @@ export function MesaCardapio() {
         </div>
       </main>
 
-      <OrderBar itemCount={totalCount} subtotal={subtotal} onClick={() => setCartOpen(true)} />
+      <OrderBar itemCount={totalCount} subtotal={subtotal} onClick={handleCartClick} />
 
       <CartDrawer
         open={cartOpen}
@@ -406,6 +535,7 @@ export function MesaCardapio() {
         customerName={customerName}
         tableLabel={tableLabel}
         deliveryDetails={deliveryDetails}
+        addresses={savedAddresses}
         onCustomerNameChange={setCustomerName}
         onTableLabelChange={setTableLabel}
         onDeliveryDetailsChange={setDeliveryDetails}
@@ -414,6 +544,18 @@ export function MesaCardapio() {
         onDecrement={handleDecrement}
         onConfirm={confirmOrder}
       />
+
+      {halfAndHalfPrompt && (
+        <HalfAndHalfChoiceDialog
+          product={halfAndHalfPrompt}
+          options={products.filter(
+            (p) => p.category_id === halfAndHalfPrompt.category_id && p.id !== halfAndHalfPrompt.id,
+          )}
+          onClose={() => setHalfAndHalfPrompt(null)}
+          onChooseWhole={handleChooseWhole}
+          onChooseHalf={handleChooseHalf}
+        />
+      )}
 
       {pickerProduct && (
         <ProductDetailSheet
@@ -427,6 +569,7 @@ export function MesaCardapio() {
                 }
               : undefined
           }
+          initialHalfFlavorId={initialHalfFlavorId}
           comboChoiceGroups={(comboChoiceGroupsByProduct.get(pickerProduct.id) ?? []).map((group) => ({
             id: group.id,
             name: group.name,
@@ -436,20 +579,28 @@ export function MesaCardapio() {
             }),
           }))}
           removableIngredients={removableIngredientsByProduct.get(pickerProduct.id)}
-          onClose={() => setPickerProduct(null)}
+          onClose={() => {
+            setPickerProduct(null);
+            setInitialHalfFlavorId(null);
+          }}
           onConfirm={handlePickerConfirm}
         />
       )}
 
-      {showAuthGate && (
+      {authIntent && (
         <CustomerAuthModal
-          onClose={() => setShowAuthGate(false)}
+          onClose={() => setAuthIntent(null)}
           onAuthenticated={() => {
-            setShowAuthGate(false);
-            submitOrder();
+            const intent = authIntent;
+            setAuthIntent(null);
+            if (intent === "checkout") submitOrder();
+            else if (intent === "cart") setCartOpen(true);
+            else setShowProfile(true);
           }}
         />
       )}
+
+      {showProfile && <CustomerProfileSheet onClose={() => setShowProfile(false)} />}
 
       {priceCheck && (
         <PriceChangeDialog

@@ -11,6 +11,10 @@ export type CartItem = {
   productId: string;
   name: string;
   price: number;
+  // Preço de tabela antes do desconto — só preenchido pro caso simples (sem
+  // meio a meio, que já usa o preço de outro produto e quebraria essa
+  // relação). Usado só pra somar "Economia de R$ X" no resumo do pedido.
+  originalPrice?: number;
   quantity: number;
   addons: CartAddon[];
   halfFlavor?: { productId: string; name: string };
@@ -108,6 +112,10 @@ export function CartProvider({ restaurantId, children }: { restaurantId: string;
           productId: product.id,
           name: halfFlavor ? `${product.name} / ${halfFlavor.name}` : product.name,
           price: halfFlavor ? halfFlavor.price : product.price,
+          originalPrice:
+            !halfFlavor && product.original_price != null && product.original_price > product.price
+              ? product.original_price
+              : undefined,
           quantity,
           addons,
           halfFlavor: halfFlavor ? { productId: halfFlavor.productId, name: halfFlavor.name } : undefined,
