@@ -89,13 +89,22 @@ Deno.serve(async (req) => {
 
     const { data: restaurant, error: restaurantError } = await serviceClient
       .from("restaurants")
-      .select("id")
+      .select("id, ordering_enabled")
       .eq("id", restaurant_id)
       .maybeSingle();
     if (restaurantError) throw restaurantError;
     if (!restaurant) {
       return new Response(JSON.stringify({ error: "Restaurante não encontrado" }), {
         status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    // Cardápio desativado pelo dono (tela de Configurações) bloqueia pedido
+    // novo pra todo mundo, mesmo lançado manualmente pelo staff — decisão
+    // deliberada, evita confusão de "desativei mas continuou entrando pedido".
+    if (!restaurant.ordering_enabled) {
+      return new Response(JSON.stringify({ error: "Este restaurante não está aceitando pedidos no momento" }), {
+        status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

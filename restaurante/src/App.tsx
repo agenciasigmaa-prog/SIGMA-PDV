@@ -5,6 +5,7 @@ import { Cadastro } from "./pages/Cadastro";
 import { Cardapio } from "./pages/Cardapio";
 import { Clientes } from "./pages/Clientes";
 import { ConfiguracaoImpressao } from "./pages/ConfiguracaoImpressao";
+import { Configuracoes } from "./pages/Configuracoes";
 import { Dashboard } from "./pages/Dashboard";
 import { Garcom } from "./pages/Garcom";
 import { Login } from "./pages/Login";
@@ -32,6 +33,7 @@ function App() {
         <Route path="/motoboy" element={<Motoboy />} />
         <Route path="/clientes" element={<Clientes />} />
         <Route path="/impressora" element={<ConfiguracaoImpressao />} />
+        <Route path="/configuracoes" element={<Configuracoes />} />
       </Route>
       <Route path="/" element={<Navigate to="/login" replace />} />
     </Routes>

@@ -7,6 +7,7 @@ type RestaurantInfo = {
   logoUrl: string | null;
   faviconUrl: string | null;
   primaryColor: string | null;
+  orderingEnabled: boolean;
 };
 
 const RestaurantContext = createContext<RestaurantInfo | null>(null);
@@ -43,7 +44,7 @@ export function TableProvider({
     setState("loading");
     supabase
       .from("restaurants")
-      .select("id, name, restaurant_branding(display_name, logo_url, favicon_url, primary_color)")
+      .select("id, name, ordering_enabled, restaurant_branding(display_name, logo_url, favicon_url, primary_color)")
       .eq(lookupColumn, lookupValue)
       .maybeSingle()
       .then(({ data }) => {
@@ -63,6 +64,7 @@ export function TableProvider({
           logoUrl: branding?.logo_url ?? null,
           faviconUrl: branding?.favicon_url ?? null,
           primaryColor: branding?.primary_color ?? null,
+          orderingEnabled: data.ordering_enabled,
         });
         setState("ready");
       });
@@ -109,6 +111,20 @@ export function TableProvider({
         <div>
           <h1 className="text-lg font-bold">Restaurante não encontrado</h1>
           <p className="mt-2 text-sm text-muted-foreground">Confira o link e tente novamente.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Desativado na tela de Configurações do restaurante (botão "Desativar
+  // cardápio") — bloqueia a visita inteira, não só o botão de confirmar,
+  // pra não deixar o cliente montar um carrinho que nunca vai poder enviar.
+  if (!info.orderingEnabled) {
+    return (
+      <div className="grid min-h-screen place-items-center px-6 text-center">
+        <div>
+          <h1 className="text-lg font-bold">{info.restaurantName} está fechado no momento</h1>
+          <p className="mt-2 text-sm text-muted-foreground">Não estamos aceitando pedidos agora. Volte mais tarde.</p>
         </div>
       </div>
     );
