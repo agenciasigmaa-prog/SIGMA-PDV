@@ -59,6 +59,7 @@ export function ManualOrderModal({
   const [neighborhoodId, setNeighborhoodId] = useState("");
   const [deliveryDriverId, setDeliveryDriverId] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"" | "cash" | "card" | "pix">("");
+  const [changeFor, setChangeFor] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdPickupCode, setCreatedPickupCode] = useState<string | null>(null);
@@ -161,10 +162,18 @@ export function ManualOrderModal({
     );
   }
 
+  // Mesma regra do servidor (place-dine-in-order): troco só existe em
+  // dinheiro e nunca pode ser menor que o total, senão não sobra troco
+  // nenhum pra dar — validado aqui também só pra dar feedback imediato,
+  // a validação de verdade continua no servidor.
+  const changeForValue = paymentMethod === "cash" && changeFor.trim() !== "" ? Number(changeFor) : null;
+  const changeForInvalid = changeForValue != null && changeForValue < total;
+
   async function handleSubmit() {
     if (cart.length === 0 || !customerName.trim() || submitting) return;
     if (orderType === "dine_in" && !tableLabel.trim()) return;
     if (orderType === "delivery" && (!deliveryAddress.trim() || !neighborhoodId)) return;
+    if (changeForInvalid) return;
     setSubmitting(true);
     setError(null);
     const { data, error: fnError } = await supabase.functions.invoke("place-dine-in-order", {
@@ -177,6 +186,7 @@ export function ManualOrderModal({
         ...(waiterId ? { waiter_id: waiterId } : {}),
         ...(orderType === "delivery" && deliveryDriverId ? { delivery_driver_id: deliveryDriverId } : {}),
         ...(orderType === "delivery" && paymentMethod ? { payment_method: paymentMethod } : {}),
+        ...(orderType === "delivery" && changeForValue != null ? { change_for: changeForValue } : {}),
         items: cart.map((l) => ({
           product_id: l.product_id,
           quantity: l.quantity,
@@ -405,7 +415,11 @@ export function ManualOrderModal({
                 )}
                 <select
                   value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value as typeof paymentMethod)}
+                  onChange={(e) => {
+                    const value = e.target.value as typeof paymentMethod;
+                    setPaymentMethod(value);
+                    if (value !== "cash") setChangeFor("");
+                  }}
                   className="w-full rounded-xl border border-border px-3 py-2.5 text-sm"
                 >
                   <option value="">Forma de pagamento (opcional)</option>
@@ -413,6 +427,23 @@ export function ManualOrderModal({
                   <option value="card">Cartão</option>
                   <option value="pix">Pix</option>
                 </select>
+                {paymentMethod === "cash" && (
+                  <div>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step="0.01"
+                      value={changeFor}
+                      onChange={(e) => setChangeFor(e.target.value)}
+                      placeholder="Troco para quanto? (opcional)"
+                      className="w-full rounded-xl border border-border px-3 py-2.5 text-sm"
+                    />
+                    {changeForInvalid && (
+                      <p className="mt-1 text-xs text-destructive">O troco precisa ser maior ou igual ao total do pedido</p>
+                    )}
+                  </div>
+                )}
               </>
             )}
             {activeWaiters.length > 0 && (
@@ -463,6 +494,7 @@ export function ManualOrderModal({
               !customerName.trim() ||
               (orderType === "dine_in" && !tableLabel.trim()) ||
               (orderType === "delivery" && (!deliveryAddress.trim() || !neighborhoodId)) ||
+              changeForInvalid ||
               submitting
             }
             className="w-full rounded-full bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground hover:brightness-105 disabled:opacity-40"

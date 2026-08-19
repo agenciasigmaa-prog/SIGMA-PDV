@@ -117,6 +117,13 @@ export function buildComandaEntrega(order: IncomingOrder, restaurantName: string
   if (order.delivery_driver_name) {
     cmds.push({ op: "text", value: `Motoboy: ${order.delivery_driver_name}` });
   }
+  if (order.payment_method === "cash") {
+    cmds.push({
+      op: "text",
+      value: order.change_for != null ? `DINHEIRO - TROCO PARA ${currency(order.change_for)}` : "DINHEIRO",
+      bold: true,
+    });
+  }
 
   cmds.push({ op: "line" });
   for (const item of order.items) {

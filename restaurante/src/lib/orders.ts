@@ -54,6 +54,7 @@ export type IncomingOrder = {
   order_type: OrderType;
   payment_status: string;
   payment_method: PaymentMethod | null;
+  change_for: number | null;
   notes: string | null;
   subtotal: number;
   discount_amount: number;
@@ -104,7 +105,7 @@ function startOfToday(): string {
 // escuta pedido novo em qualquer tela, não só em /pedidos) precisa do mesmo
 // formato de linha que o board usa.
 const ORDER_SELECT =
-  "id, customer_name, table_label, pickup_code, delivery_address, status, order_type, payment_status, payment_method, notes, subtotal, discount_amount, service_charge_amount, delivery_fee_amount, total, created_at, status_changed_at, waiter_id, waiters(name), delivery_driver_id, delivery_drivers(name), neighborhood_id, neighborhood_name, order_items(id, quantity, unit_price, half_flavor_name, notes, products!order_items_product_id_fkey(name), order_item_addons(name, quantity, unit_price), order_item_combo_choices(group_name, option_name), order_item_removed_ingredients(ingredient_name)), order_payment_splits(id, label, amount, payment_method, status, paid_at, voided_at, order_payment_split_payments(method, amount))";
+  "id, customer_name, table_label, pickup_code, delivery_address, status, order_type, payment_status, payment_method, change_for, notes, subtotal, discount_amount, service_charge_amount, delivery_fee_amount, total, created_at, status_changed_at, waiter_id, waiters(name), delivery_driver_id, delivery_drivers(name), neighborhood_id, neighborhood_name, order_items(id, quantity, unit_price, half_flavor_name, notes, products!order_items_product_id_fkey(name), order_item_addons(name, quantity, unit_price), order_item_combo_choices(group_name, option_name), order_item_removed_ingredients(ingredient_name)), order_payment_splits(id, label, amount, payment_method, status, paid_at, voided_at, order_payment_split_payments(method, amount))";
 
 type RawItem = {
   id: string;
@@ -137,6 +138,7 @@ type RawOrder = {
   order_type: OrderType;
   payment_status: string;
   payment_method: PaymentMethod | null;
+  change_for: number | null;
   notes: string | null;
   subtotal: number;
   discount_amount: number;
@@ -166,6 +168,7 @@ function mapRawOrder(order: RawOrder): IncomingOrder {
     order_type: order.order_type,
     payment_status: order.payment_status,
     payment_method: order.payment_method,
+    change_for: order.change_for != null ? Number(order.change_for) : null,
     notes: order.notes,
     subtotal: Number(order.subtotal),
     discount_amount: Number(order.discount_amount),

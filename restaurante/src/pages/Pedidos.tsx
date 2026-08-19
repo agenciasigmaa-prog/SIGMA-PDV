@@ -140,6 +140,11 @@ function OrderCard({
       {order.order_type === "delivery" && order.delivery_driver_name && (
         <p className="mb-2 text-xs font-medium text-muted-foreground">Motoboy: {order.delivery_driver_name}</p>
       )}
+      {order.order_type === "delivery" && order.payment_method === "cash" && (
+        <p className="mb-2 text-xs font-medium text-muted-foreground">
+          Dinheiro{order.change_for != null ? ` — troco para ${currency(order.change_for)}` : ""}
+        </p>
+      )}
 
       {order.notes && <p className="mb-2 text-xs italic text-muted-foreground">Obs: {order.notes}</p>}
 
@@ -218,6 +223,77 @@ function OrderCard({
   );
 }
 
+// Corpo de uma coluna (cabeçalho + lista de cards) — reaproveitado pelo
+// quadro Kanban lado a lado (desktop) e pela visão de uma coluna por vez
+// (celular, ver mobileStatus). Extraído pra não duplicar essa marcação nos
+// dois lugares.
+function OrderColumnBody({
+  status,
+  orders,
+  waiters,
+  drivers,
+  onAssignWaiter,
+  onAssignDeliveryDriver,
+  onAdvance,
+  onCancel,
+  onDetail,
+  onPrint,
+}: {
+  status: OrderStatus;
+  orders: IncomingOrder[];
+  waiters: Waiter[];
+  drivers: DeliveryDriver[];
+  onAssignWaiter: (orderId: string, waiterId: string) => void;
+  onAssignDeliveryDriver: (orderId: string, driverId: string) => void;
+  onAdvance: (order: IncomingOrder) => void;
+  onCancel: (order: IncomingOrder) => void;
+  onDetail: (order: IncomingOrder) => void;
+  onPrint: (order: IncomingOrder) => void;
+}) {
+  const columnTotal = orders.reduce((sum, o) => sum + o.total, 0);
+  const oldestStatusChangedAt = orders.reduce<string | null>(
+    (oldest, o) => (!oldest || o.status_changed_at < oldest ? o.status_changed_at : oldest),
+    null,
+  );
+  return (
+    <>
+      <div className="mb-3 border-b border-border px-1 pb-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold">
+            {STATUS_LABEL[status]} <span className="font-normal text-muted-foreground">· {orders.length}</span>
+          </h3>
+          <span className="text-xs text-muted-foreground">{currency(columnTotal)}</span>
+        </div>
+        {oldestStatusChangedAt && (
+          <p className="text-[11px] text-muted-foreground">mais antigo há {timeAgo(oldestStatusChangedAt)}</p>
+        )}
+      </div>
+      <div className="space-y-3">
+        {orders.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-border py-6 text-center text-xs text-muted-foreground">
+            Nenhum pedido
+          </p>
+        ) : (
+          orders.map((order) => (
+            <OrderCard
+              key={order.id}
+              order={order}
+              waiters={waiters}
+              onAssignWaiter={(waiterId) => onAssignWaiter(order.id, waiterId)}
+              drivers={drivers}
+              onAssignDeliveryDriver={(driverId) => onAssignDeliveryDriver(order.id, driverId)}
+              onAdvance={() => onAdvance(order)}
+              onCancel={() => onCancel(order)}
+              onDetail={() => onDetail(order)}
+              onPrint={() => onPrint(order)}
+            />
+          ))
+        )}
+      </div>
+    </>
+  );
+}
+
 export function Pedidos() {
   const { profile } = useSession();
   const restaurantId = profile?.restaurant_id ?? null;
@@ -236,6 +312,9 @@ export function Pedidos() {
   const { waiters } = useWaiters(restaurantId);
   const { drivers } = useDeliveryDrivers(restaurantId);
   const [channelFilter, setChannelFilter] = useState<"all" | OrderType>("all");
+  // Só usado na visão mobile — desktop mostra todas as colunas lado a lado,
+  // celular mostra uma coluna cheia por vez (ver COLUMNS/byStatus abaixo).
+  const [mobileStatus, setMobileStatus] = useState<OrderStatus>("received");
   const [search, setSearch] = useState("");
   const [cancelling, setCancelling] = useState<IncomingOrder | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -292,40 +371,64 @@ export function Pedidos() {
 
   return (
     <div>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div>
-            <h2 className="text-xl font-bold">Pedidos</h2>
-            <p className="text-sm text-muted-foreground">Hoje, em tempo real — cada pedido é cobrado individualmente.</p>
+      {/* Celular: fica grudado logo abaixo da barra de cima (sticky, mesma
+          altura h-14 dela) — só a lista de pedidos rola por baixo disso. No
+          desktop volta a ser um bloco normal (md:static), sem esse efeito. */}
+      <div className="sticky top-14 z-30 -mx-4 bg-background px-4 pb-4 md:static md:top-auto md:z-auto md:mx-0 md:bg-transparent md:px-0 md:pb-0">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div>
+              <h2 className="text-xl font-bold">Pedidos</h2>
+              <p className="text-sm text-muted-foreground">Hoje, em tempo real — cada pedido é cobrado individualmente.</p>
+            </div>
+            <button
+              onClick={() => setShowManualOrder(true)}
+              className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-2 text-xs font-bold text-primary-foreground hover:brightness-105"
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden /> Novo pedido
+            </button>
           </div>
-          <button
-            onClick={() => setShowManualOrder(true)}
-            className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-2 text-xs font-bold text-primary-foreground hover:brightness-105"
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden /> Novo pedido
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar cliente ou mesa"
+              className="w-40 rounded-full border border-border bg-card px-3 py-1.5 text-xs sm:w-48"
+            />
+            <div className="flex gap-1 rounded-full bg-muted p-1">
+              {(["all", "dine_in", "pickup", "delivery"] as const).map((value) => (
+                <button
+                  key={value}
+                  onClick={() => setChannelFilter(value)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-bold ${
+                    channelFilter === value ? "bg-card shadow-card" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {value === "all" ? "Todos" : CHANNEL_LABEL[value]}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar cliente ou mesa"
-            className="w-40 rounded-full border border-border bg-card px-3 py-1.5 text-xs sm:w-48"
-          />
-          <div className="flex gap-1 rounded-full bg-muted p-1">
-            {(["all", "dine_in", "pickup", "delivery"] as const).map((value) => (
+
+        {/* Abas de status só no celular — desktop mostra todas as colunas
+            lado a lado, não precisa de aba nenhuma. */}
+        <div className="scrollbar-none -mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 md:hidden">
+          {COLUMNS.map((status) => {
+            const count = byStatus.get(status)?.length ?? 0;
+            return (
               <button
-                key={value}
-                onClick={() => setChannelFilter(value)}
-                className={`rounded-full px-3 py-1.5 text-xs font-bold ${
-                  channelFilter === value ? "bg-card shadow-card" : "text-muted-foreground hover:text-foreground"
+                key={status}
+                onClick={() => setMobileStatus(status)}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${
+                  mobileStatus === status ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
                 }`}
               >
-                {value === "all" ? "Todos" : CHANNEL_LABEL[value]}
+                {STATUS_LABEL[status]} · {count}
               </button>
-            ))}
-          </div>
+            );
+          })}
         </div>
       </div>
 
@@ -338,56 +441,52 @@ export function Pedidos() {
       {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
 
       {!loading && (
-        <div className="scrollbar-none -mx-4 flex divide-x divide-border overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0">
-          {COLUMNS.map((status) => {
-            const columnOrders = byStatus.get(status) ?? [];
-            const columnTotal = columnOrders.reduce((sum, o) => sum + o.total, 0);
-            const oldestStatusChangedAt = columnOrders.reduce<string | null>(
-              (oldest, o) => (!oldest || o.status_changed_at < oldest ? o.status_changed_at : oldest),
-              null,
-            );
-            return (
+        <>
+          {/* Celular: quadro lado a lado não cabe na tela — vira abas por
+              status (uma coluna cheia por vez, aba escolhida no cabeçalho
+              fixo acima), com contagem em cada aba pra dar visão geral sem
+              precisar entrar em cada uma. */}
+          <div className="md:hidden">
+            <OrderColumnBody
+              status={mobileStatus}
+              orders={byStatus.get(mobileStatus) ?? []}
+              waiters={waiters}
+              drivers={drivers}
+              onAssignWaiter={assignWaiter}
+              onAssignDeliveryDriver={assignDeliveryDriver}
+              onAdvance={(order) => {
+                const next = nextStatus(order.status);
+                if (next) advanceStatus(order.id, next);
+              }}
+              onCancel={setCancelling}
+              onDetail={(order) => setDetailOrderId(order.id)}
+              onPrint={printOrderTicket}
+            />
+          </div>
+
+          {/* Desktop: quadro Kanban completo, todas as colunas lado a lado. */}
+          <div className="scrollbar-none -mx-4 hidden divide-x divide-border overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0 md:flex">
+            {COLUMNS.map((status) => (
               <div key={status} className="w-[280px] shrink-0 pl-4 first:pl-0 sm:w-[300px]">
-                <div className="mb-3 border-b border-border px-1 pb-2">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-bold">
-                      {STATUS_LABEL[status]} <span className="font-normal text-muted-foreground">· {columnOrders.length}</span>
-                    </h3>
-                    <span className="text-xs text-muted-foreground">{currency(columnTotal)}</span>
-                  </div>
-                  {oldestStatusChangedAt && (
-                    <p className="text-[11px] text-muted-foreground">mais antigo há {timeAgo(oldestStatusChangedAt)}</p>
-                  )}
-                </div>
-                <div className="space-y-3">
-                  {columnOrders.length === 0 ? (
-                    <p className="rounded-xl border border-dashed border-border py-6 text-center text-xs text-muted-foreground">
-                      Nenhum pedido
-                    </p>
-                  ) : (
-                    columnOrders.map((order) => (
-                      <OrderCard
-                        key={order.id}
-                        order={order}
-                        waiters={waiters}
-                        onAssignWaiter={(waiterId) => assignWaiter(order.id, waiterId)}
-                        drivers={drivers}
-                        onAssignDeliveryDriver={(driverId) => assignDeliveryDriver(order.id, driverId)}
-                        onAdvance={() => {
-                          const next = nextStatus(order.status);
-                          if (next) advanceStatus(order.id, next);
-                        }}
-                        onCancel={() => setCancelling(order)}
-                        onDetail={() => setDetailOrderId(order.id)}
-                        onPrint={() => printOrderTicket(order)}
-                      />
-                    ))
-                  )}
-                </div>
+                <OrderColumnBody
+                  status={status}
+                  orders={byStatus.get(status) ?? []}
+                  waiters={waiters}
+                  drivers={drivers}
+                  onAssignWaiter={assignWaiter}
+                  onAssignDeliveryDriver={assignDeliveryDriver}
+                  onAdvance={(order) => {
+                    const next = nextStatus(order.status);
+                    if (next) advanceStatus(order.id, next);
+                  }}
+                  onCancel={setCancelling}
+                  onDetail={(order) => setDetailOrderId(order.id)}
+                  onPrint={printOrderTicket}
+                />
               </div>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        </>
       )}
 
       {showManualOrder && restaurantId && (

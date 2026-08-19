@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ExternalLink, LayoutGrid, List, Search } from "lucide-react";
 import { CategoriesManager } from "../components/CategoriesManager";
 import { CategoryAddonsModal } from "../components/CategoryAddonsModal";
@@ -78,6 +78,7 @@ export function Cardapio() {
 
   const [tab, setTab] = useState<Tab>("produtos");
   const [search, setSearch] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [viewMode, setViewMode] = useState<"list" | "grid">(
     () => (localStorage.getItem("sigma:produtos-view") as "list" | "grid") ?? "list",
@@ -86,6 +87,20 @@ export function Cardapio() {
   useEffect(() => {
     localStorage.setItem("sigma:produtos-view", viewMode);
   }, [viewMode]);
+
+  // Celular: rolar a lista com o campo de busca ainda focado reabre o
+  // teclado a cada scroll (o navegador interpreta o gesto como toque no
+  // input). Tira o foco assim que a rolagem começa — o teclado só volta a
+  // abrir quando o usuário toca o campo de novo, de propósito.
+  useEffect(() => {
+    function blurSearchOnScroll() {
+      if (document.activeElement === searchInputRef.current) {
+        searchInputRef.current?.blur();
+      }
+    }
+    window.addEventListener("scroll", blurSearchOnScroll, { passive: true });
+    return () => window.removeEventListener("scroll", blurSearchOnScroll);
+  }, []);
 
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -240,6 +255,7 @@ export function Cardapio() {
                 aria-hidden
               />
               <input
+                ref={searchInputRef}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Buscar produto por nome..."
