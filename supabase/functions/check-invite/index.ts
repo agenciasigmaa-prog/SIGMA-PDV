@@ -26,7 +26,7 @@ Deno.serve(async (req) => {
       .eq("invite_token", token)
       .maybeSingle();
 
-    return new Response(JSON.stringify({ valid: !!data }), {
+    return new Response(JSON.stringify({ valid: !!data, restaurantId: data?.id ?? null }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch {

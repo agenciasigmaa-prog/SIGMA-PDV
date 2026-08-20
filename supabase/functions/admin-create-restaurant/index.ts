@@ -67,8 +67,8 @@ Deno.serve(async (req) => {
 
     EdgeRuntime.waitUntil(logAdminAction(serviceClient, admin.id, "restaurant_invite_created", restaurant.id, {}));
 
-    // TODO: trocar por variável de ambiente quando o app restaurante for pra produção.
-    const inviteLink = `http://localhost:5175/cadastro?token=${inviteToken}`;
+    const restauranteAppUrl = Deno.env.get("RESTAURANTE_APP_URL") ?? "https://app.assessoriasigma.com.br";
+    const inviteLink = `${restauranteAppUrl}/cadastro?token=${inviteToken}`;
 
     return new Response(JSON.stringify({ restaurant, invite_link: inviteLink }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
