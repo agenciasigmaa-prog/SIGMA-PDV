@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
-import { Pencil, Plus, Search, UserPlus } from "lucide-react";
+import { LogIn, Pencil, Plus, Search, UserPlus } from "lucide-react";
 import { EditRestaurantModal } from "../components/EditRestaurantModal";
 import { ManualRestaurantModal } from "../components/ManualRestaurantModal";
 import { NewRestaurantModal } from "../components/NewRestaurantModal";
+import { supabase } from "../lib/supabase";
+import { describeFunctionError } from "../lib/functionError";
 import {
   STATUS_BADGE_CLASS,
   STATUS_LABEL,
@@ -18,8 +20,28 @@ export function Restaurants() {
   const [showManualRestaurant, setShowManualRestaurant] = useState(false);
   const [editingRestaurant, setEditingRestaurant] = useState<Restaurant | null>(null);
   const [search, setSearch] = useState("");
+  const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
+  const [impersonateError, setImpersonateError] = useState<string | null>(null);
 
   const filteredRestaurants = useMemo(() => filterRestaurants(restaurants, search), [restaurants, search]);
+
+  // Abre o painel do restaurante numa aba nova, já logado como o dono —
+  // gera um magic link de uso único via admin-impersonate-restaurant (nunca
+  // vê/usa a senha real do dono) e navega direto pra ele. Fica registrado em
+  // admin_action_log do lado da function, pra suporte ter rastro.
+  async function handleImpersonate(restaurant: Restaurant) {
+    setImpersonateError(null);
+    setImpersonatingId(restaurant.id);
+    const { data, error } = await supabase.functions.invoke("admin-impersonate-restaurant", {
+      body: { restaurant_id: restaurant.id },
+    });
+    setImpersonatingId(null);
+    if (error) {
+      setImpersonateError(await describeFunctionError(error));
+      return;
+    }
+    window.open((data as { action_link: string }).action_link, "_blank", "noopener");
+  }
 
   return (
     <div>
@@ -50,6 +72,10 @@ export function Restaurants() {
           className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         />
       </div>
+
+      {impersonateError && (
+        <p className="mb-4 rounded-xl bg-destructive/10 px-4 py-2.5 text-sm font-medium text-destructive">{impersonateError}</p>
+      )}
 
       <div className="overflow-hidden rounded-2xl bg-card shadow-card">
         <table className="w-full text-left text-sm">
@@ -101,6 +127,15 @@ export function Restaurants() {
                   {restaurant.last_order_at ? new Date(restaurant.last_order_at).toLocaleDateString("pt-BR") : "—"}
                 </td>
                 <td className="px-4 py-3 text-right">
+                  <button
+                    onClick={() => handleImpersonate(restaurant)}
+                    disabled={impersonatingId === restaurant.id}
+                    className="rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                    aria-label={`Entrar como suporte em ${restaurant.name}`}
+                    title="Entrar como suporte"
+                  >
+                    <LogIn className="h-4 w-4" aria-hidden />
+                  </button>
                   <button
                     onClick={() => setEditingRestaurant(restaurant)}
                     className="rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
