@@ -11,8 +11,10 @@ import { ProductDetailSheet } from "../components/ProductDetailSheet";
 import { HalfAndHalfChoiceDialog } from "../components/HalfAndHalfChoiceDialog";
 import { CustomerAuthModal } from "../components/CustomerAuthModal";
 import { CustomerProfileSheet } from "../components/CustomerProfileSheet";
+import { MyOrderSheet } from "../components/MyOrderSheet";
 import { useTableContext } from "../lib/TableContext";
 import { useSession } from "../lib/useSession";
+import { useMyOrder } from "../lib/myOrder";
 import { useOrderChannel } from "../lib/OrderChannelContext";
 import { useMenu } from "../lib/useMenu";
 import { useCart, type CartAddon, type CartComboChoice, type CartHalfFlavor } from "../lib/CartContext";
@@ -36,7 +38,9 @@ export function MesaCardapio() {
   const { restaurantId, restaurantName, logoUrl } = useTableContext();
   const orderType = useOrderChannel();
   const { addresses: savedAddresses, saveAddress } = useCustomerAddresses();
-  const { isRealCustomer, profile } = useSession();
+  const { session, isRealCustomer, profile } = useSession();
+  const { order: myOrder, loading: myOrderLoading } = useMyOrder(restaurantId, isRealCustomer ? (session?.user.id ?? null) : null);
+  const [showMyOrder, setShowMyOrder] = useState(false);
   const {
     categories,
     products,
@@ -462,6 +466,9 @@ export function MesaCardapio() {
         onSearchChange={setSearchQuery}
         onExpandSearch={() => setSearchExpanded(true)}
         onCollapseSearch={handleCollapseSearch}
+        showMyOrder={isRealCustomer}
+        myOrderActive={!!myOrder && myOrder.status !== "completed" && myOrder.status !== "cancelled"}
+        onMyOrderClick={() => setShowMyOrder(true)}
       />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-28 pt-4 md:px-6 md:pt-6">
@@ -601,6 +608,8 @@ export function MesaCardapio() {
       )}
 
       {showProfile && <CustomerProfileSheet onClose={() => setShowProfile(false)} />}
+
+      {showMyOrder && <MyOrderSheet order={myOrder} loading={myOrderLoading} onClose={() => setShowMyOrder(false)} />}
 
       {priceCheck && (
         <PriceChangeDialog

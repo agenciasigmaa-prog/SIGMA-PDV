@@ -95,3 +95,13 @@ func Run(icon []byte, version, agentID string, srv *http.Server) error {
 
 	return serveErr
 }
+
+// RequestQuit sinaliza pra bandeja encerrar como se alguém tivesse clicado
+// em "Sair" — usado pelo autoupdate quando termina de baixar e validar uma
+// versão nova. O onExit já registrado acima cuida do shutdown gracioso do
+// servidor (mesmo caminho do "Sair" manual, com os 5s de tolerância pra
+// uma impressão em andamento terminar); essa função só precisa disparar
+// esse mesmo caminho de fora da goroutine da bandeja.
+func RequestQuit() {
+	systray.Quit()
+}

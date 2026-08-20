@@ -56,6 +56,8 @@ Ao tocar em "Revisar pedido":
 
 O ícone de conta no topo do cardápio abre a tela de **Perfil**: nome, telefone, trocar senha, e endereços de entrega salvos (cada um com um nome escolhido pelo cliente, tipo "Casa"/"Trabalho", com o ícone correspondente) — que também dá pra nomear direto no checkout, na hora de digitar um endereço novo. Sem foto de perfil. O cadastro vale em qualquer restaurante da plataforma (não é por tenant).
 
+Um ícone de prancheta ao lado do de conta (só aparece pra quem já tem conta real) abre **"Meu pedido"**: o andamento do pedido mais recente feito *nessa loja*, em tempo real, com um passo a passo diferente por canal — "Recebido → Em preparo → Pronto → Entregue" pra mesa, "…→ Pronto pra retirar → Retirado" pra retirada (mostra o código de retirada em destaque), "…→ Saiu pra entrega → Entregue" pra delivery (mostra endereço e bairro). Um ponto no ícone avisa quando há pedido em andamento, sem precisar abrir. É diferente da tela cheia "Pedido enviado!" que aparece uma vez só, na hora da confirmação — esse painel fica disponível o tempo todo depois, pra conferir o status sem precisar recarregar a página.
+
 ### Envio do pedido — Edge Function `place-dine-in-order`
 
 O carrinho nunca vira `INSERT` direto do navegador — o preço **nunca pode vir do cliente**. A function, rodando com a service role:
@@ -114,6 +116,8 @@ Cada card mostra o canal, há quanto tempo o pedido chegou, o cliente, onde entr
 **"Novo pedido"** abre um formulário pra equipe lançar um pedido manual (telefone, balcão) — hoje só produto + quantidade, sem adicional/combo/meio a meio. O tipo (Mesa/Retirada/Entrega) muda os campos exigidos; retirada gera um código mostrado em tela cheia pra passar pro cliente.
 
 O ícone de detalhes abre um painel onde a equipe pode adicionar/remover item, editar desconto e taxa de serviço (sempre recalculados do zero a partir do banco, nunca incrementalmente — via a Edge Function `staff-edit-order`), registrar a forma de pagamento (dinheiro/cartão/PIX) e escrever uma observação do pedido. Cada pedido novo toca um som diferente conforme o canal.
+
+**"Informar alta demanda"**, ao lado de "Novo pedido", abre um ajuste temporário de tempo e taxa de entrega — inspirado no recurso equivalente do iFood. A equipe escolhe minutos extras, uma taxa extra em R$, um motivo (motoboy faltou, chuva, cozinheiro faltou, alta demanda, outro) e por quanto tempo o ajuste vale (1 a 6 horas); ele expira sozinho, sem precisar lembrar de desligar. Enquanto ativo, o botão vira um aviso "Alta demanda até HH:MM" clicável pra editar ou remover antes da hora. A taxa extra soma na taxa do bairro em todo pedido de entrega novo enquanto o ajuste estiver valendo (recalculada no servidor, nunca confiada do navegador do cliente) — mas não aparece explicada pro cliente no checkout, só no valor final do pedido.
 
 ### Marketing (`/marketing`)
 

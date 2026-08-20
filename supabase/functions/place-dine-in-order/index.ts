@@ -161,6 +161,22 @@ Deno.serve(async (req) => {
       neighborhood_id = neighborhood.id;
       neighborhood_name = neighborhood.name;
       delivery_fee_amount = Number(neighborhood.delivery_fee);
+
+      // Ajuste de "alta demanda" (tela Pedidos, restaurante/src/components/
+      // AltaDemandaModal.tsx): taxa extra temporária somada em cima da taxa
+      // do bairro, configurada pelo staff em restaurant_branding e nunca
+      // confiada do client — igual ao resto desta função, recalcula do zero
+      // a partir do banco. demand_expires_at nulo ou no passado = sem
+      // ajuste ativo (expira sozinho, sem job/trigger apagando os campos).
+      const { data: branding, error: brandingError } = await serviceClient
+        .from("restaurant_branding")
+        .select("demand_extra_fee, demand_expires_at")
+        .eq("restaurant_id", restaurant_id)
+        .maybeSingle();
+      if (brandingError) throw brandingError;
+      if (branding?.demand_expires_at && new Date(branding.demand_expires_at).getTime() > Date.now()) {
+        delivery_fee_amount += Number(branding.demand_extra_fee ?? 0);
+      }
     }
 
     // Preço NUNCA vem do client. Produto esgotado hoje cai no mesmo caminho de

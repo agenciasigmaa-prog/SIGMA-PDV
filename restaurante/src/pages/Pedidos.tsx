@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bike, CheckCircle2, ClipboardList, MapPin, Plus, Printer, ShoppingBag, Utensils, X } from "lucide-react";
+import { Bike, CheckCircle2, ClipboardList, Flame, MapPin, Plus, Printer, ShoppingBag, Utensils, X } from "lucide-react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ManualOrderModal } from "../components/ManualOrderModal";
 import { OrderDetailModal } from "../components/OrderDetailModal";
 import { WaiterAssignSelect } from "../components/WaiterAssignSelect";
 import { DeliveryDriverAssignSelect } from "../components/DeliveryDriverAssignSelect";
+import { AltaDemandaModal } from "../components/AltaDemandaModal";
 import {
   itemTotal,
   nextStatus,
@@ -18,6 +19,8 @@ import {
 } from "../lib/orders";
 import { useWaiters, type Waiter } from "../lib/waiters";
 import { useDeliveryDrivers, type DeliveryDriver } from "../lib/deliveryDrivers";
+import { useNeighborhoods } from "../lib/neighborhoods";
+import { useDemandAdjustment } from "../lib/demandAdjustment";
 import { useSession } from "../lib/useSession";
 import { useRestaurantName } from "../lib/restaurant";
 import { describeAgentError, getExtraPrinterNames, printOrder } from "../lib/printAgent";
@@ -311,6 +314,10 @@ export function Pedidos() {
   } = useIncomingOrders(restaurantId);
   const { waiters } = useWaiters(restaurantId);
   const { drivers } = useDeliveryDrivers(restaurantId);
+  const { neighborhoods } = useNeighborhoods(restaurantId);
+  const { adjustment: demandAdjustment, setAdjustment: saveDemandAdjustment, clearAdjustment: clearDemandAdjustment } =
+    useDemandAdjustment(restaurantId);
+  const [showAltaDemanda, setShowAltaDemanda] = useState(false);
   const [channelFilter, setChannelFilter] = useState<"all" | OrderType>("all");
   // Só usado na visão mobile — desktop mostra todas as colunas lado a lado,
   // celular mostra uma coluna cheia por vez (ver COLUMNS/byStatus abaixo).
@@ -387,6 +394,22 @@ export function Pedidos() {
             >
               <Plus className="h-3.5 w-3.5" aria-hidden /> Novo pedido
             </button>
+            {demandAdjustment ? (
+              <button
+                onClick={() => setShowAltaDemanda(true)}
+                className="flex items-center gap-1.5 rounded-full bg-accent px-3 py-2 text-xs font-bold text-accent-foreground hover:brightness-105"
+              >
+                <Flame className="h-3.5 w-3.5" aria-hidden /> Alta demanda até{" "}
+                {new Date(demandAdjustment.expiresAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowAltaDemanda(true)}
+                className="flex items-center gap-1.5 rounded-full border border-border px-3 py-2 text-xs font-bold hover:bg-muted"
+              >
+                <Flame className="h-3.5 w-3.5" aria-hidden /> Informar alta demanda
+              </button>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <input
@@ -494,6 +517,16 @@ export function Pedidos() {
           restaurantId={restaurantId}
           onClose={() => setShowManualOrder(false)}
           onCreated={() => setShowManualOrder(false)}
+        />
+      )}
+
+      {showAltaDemanda && (
+        <AltaDemandaModal
+          active={demandAdjustment}
+          neighborhoods={neighborhoods}
+          onSave={saveDemandAdjustment}
+          onClear={clearDemandAdjustment}
+          onClose={() => setShowAltaDemanda(false)}
         />
       )}
 

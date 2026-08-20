@@ -1,8 +1,12 @@
 package httpapi
 
 // Version é a versão do agente, exibida em /health e na tela /impressora do
-// PDV pra diagnóstico. Atualizar a cada release.
-const Version = "1.1.0"
+// PDV pra diagnóstico, e comparada pelo pacote autoupdate contra o
+// manifesto publicado (restaurante/public/downloads/latest.json) pra saber
+// se há uma versão mais nova. Atualizar a cada release — e lembrar de
+// também atualizar o manifesto (ver README, "Publicar uma versão nova"),
+// senão o autoupdate nunca detecta o build novo.
+const Version = "1.2.0"
 
 // Port é a porta padrão do servidor HTTP local — mesma do spec.json
 // (`agente.porta_padrao`).
@@ -24,3 +28,10 @@ var defaultAllowedOrigins = []string{
 	"https://app.assessoriasigma.com.br",
 	"https://sigma-pdv-restaurante.vercel.app",
 }
+
+// SelfCheckOrigin é o Origin que o próprio agente usa quando precisa
+// chamar a si mesmo (hoje só o autoupdate, confirmando que uma versão nova
+// subiu antes de descartar a antiga de vez) — precisa ser uma origem já
+// presente em defaultAllowedOrigins, senão o agente se bloquearia sozinho.
+// Qual delas não importa, é só uma checagem local; usa a primeira.
+var SelfCheckOrigin = defaultAllowedOrigins[0]

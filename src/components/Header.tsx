@@ -1,4 +1,4 @@
-import { ArrowLeft, Search, ShoppingCart, User } from "lucide-react";
+import { ArrowLeft, ClipboardList, Search, ShoppingCart, User } from "lucide-react";
 
 // Header muda de cara ao rolar a página (ou ao tocar na lupa): em vez da
 // logo/nome cortados pela metade quando o topo já saiu de vista, mostra uma
@@ -15,6 +15,9 @@ export function Header({
   onSearchChange,
   onExpandSearch,
   onCollapseSearch,
+  showMyOrder,
+  myOrderActive,
+  onMyOrderClick,
 }: {
   restaurantName: string;
   logoUrl: string | null;
@@ -26,6 +29,13 @@ export function Header({
   onSearchChange: (value: string) => void;
   onExpandSearch: () => void;
   onCollapseSearch: () => void;
+  // "Meu pedido" só faz sentido pra cliente logado (senão não existe pedido
+  // pra rastrear) — showMyOrder é isRealCustomer, decidido por quem chama.
+  // myOrderActive liga o ponto de destaque quando há um pedido em andamento
+  // (não visto/finalizado), pra chamar atenção sem precisar abrir o painel.
+  showMyOrder: boolean;
+  myOrderActive: boolean;
+  onMyOrderClick: () => void;
 }) {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-xl">
@@ -76,6 +86,19 @@ export function Header({
               <Search className="h-5 w-5" aria-hidden />
             </button>
           </>
+        )}
+        {showMyOrder && (
+          <button
+            type="button"
+            aria-label="Meu pedido"
+            onClick={onMyOrderClick}
+            className="press relative grid h-11 w-11 shrink-0 place-items-center rounded-full hover:bg-muted"
+          >
+            <ClipboardList className="h-5 w-5" aria-hidden />
+            {myOrderActive && (
+              <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" aria-hidden />
+            )}
+          </button>
         )}
         <button
           type="button"

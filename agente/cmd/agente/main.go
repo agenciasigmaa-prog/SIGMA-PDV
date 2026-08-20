@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -11,8 +12,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"pdv-sigma/agente/internal/autostart"
+	"pdv-sigma/agente/internal/autoupdate"
 	"pdv-sigma/agente/internal/config"
 	"pdv-sigma/agente/internal/httpapi"
 	"pdv-sigma/agente/internal/trayapp"
@@ -21,10 +24,35 @@ import (
 //go:embed icon.ico
 var iconBytes []byte
 
+// autoUpdateInterval é de quanto em quanto tempo o agente confere se saiu
+// uma versão nova enquanto já está rodando (fora a checagem síncrona no
+// início — ver mais abaixo). Não precisa ser curto: o caso comum (login do
+// Windows de manhã) já é coberto pela checagem de início.
+const autoUpdateInterval = 6 * time.Hour
+
 func main() {
 	logFile := setupLogging()
 	if logFile != nil {
 		defer logFile.Close()
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("não foi possível localizar o executável: %v", err)
+	}
+	autoupdate.CleanupStale(exePath)
+
+	// Se uma execução anterior baixou e validou uma versão nova mas não
+	// chegou a trocar de fato (processo morto no meio, Windows desligou
+	// etc.), aplica agora, antes de mais nada — evita ficar preso rodando
+	// uma versão velha só porque a troca foi interrompida.
+	if autoupdate.HasStaged(exePath) {
+		if err := autoupdate.Apply(exePath, httpapi.Port); err != nil {
+			log.Printf("autoupdate: falha ao aplicar atualização pendente: %v", err)
+		} else {
+			log.Printf("autoupdate: atualização pendente aplicada — encerrando processo antigo")
+			return
+		}
 	}
 
 	cfgPath, err := config.DefaultPath()
@@ -58,6 +86,22 @@ func main() {
 	cfg := store.Get()
 	log.Printf("Impressora PDV-Sigma v%s — agentId=%s config=%s", httpapi.Version, cfg.AgentID, cfgPath)
 
+	// Checagem de atualização síncrona, antes de abrir bandeja/servidor —
+	// cobre o caso comum (primeira abertura do dia, no login do Windows)
+	// sem esperar o ciclo periódico abaixo. Falha aqui (sem internet,
+	// manifesto fora do ar etc.) nunca impede o agente de seguir rodando
+	// com a versão atual.
+	if staged, err := autoupdate.CheckAndStage(exePath, httpapi.Version); err != nil {
+		log.Printf("autoupdate: checagem inicial falhou (seguindo com v%s): %v", httpapi.Version, err)
+	} else if staged {
+		if err := autoupdate.Apply(exePath, httpapi.Port); err != nil {
+			log.Printf("autoupdate: falha ao aplicar atualização: %v", err)
+		} else {
+			log.Printf("autoupdate: atualizado com sucesso — encerrando processo antigo")
+			return
+		}
+	}
+
 	queue := httpapi.NewQueue()
 	handler := httpapi.New(store, queue)
 
@@ -66,12 +110,33 @@ func main() {
 
 	httpServer := &http.Server{Addr: addr, Handler: handler}
 
+	// Checagem periódica em segundo plano: se aparecer uma versão nova
+	// enquanto o agente já está rodando, baixa e valida, e só então pede
+	// pra bandeja encerrar como se fosse um "Sair" manual (dá tempo de
+	// qualquer impressão em andamento terminar antes do shutdown). A troca
+	// de fato só acontece depois que trayapp.Run retornar, logo abaixo —
+	// nunca troca o binário com o processo ainda no ar.
+	updateCtx, cancelUpdate := context.WithCancel(context.Background())
+	go autoupdate.WatchPeriodic(updateCtx, exePath, httpapi.Version, autoUpdateInterval, trayapp.RequestQuit)
+
 	// No Windows, trayapp.Run sobe o servidor numa goroutine e bloqueia
-	// mostrando o ícone na bandeja até "Sair". Fora do Windows (dev/test),
-	// o stub só chama ListenAndServe direto — sem bandeja, mesmo
-	// comportamento de antes.
-	if err := trayapp.Run(iconBytes, httpapi.Version, cfg.AgentID, httpServer); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("servidor HTTP encerrou: %v", err)
+	// mostrando o ícone na bandeja até "Sair" (manual ou via autoupdate).
+	// Fora do Windows (dev/test), o stub só chama ListenAndServe direto —
+	// sem bandeja, mesmo comportamento de antes.
+	runErr := trayapp.Run(iconBytes, httpapi.Version, cfg.AgentID, httpServer)
+	cancelUpdate()
+
+	if autoupdate.HasStaged(exePath) {
+		if err := autoupdate.Apply(exePath, httpapi.Port); err != nil {
+			log.Printf("autoupdate: falha ao aplicar atualização após encerrar: %v", err)
+		} else {
+			log.Printf("autoupdate: atualizado com sucesso — encerrando processo antigo")
+			return
+		}
+	}
+
+	if runErr != nil && !errors.Is(runErr, http.ErrServerClosed) {
+		log.Fatalf("servidor HTTP encerrou: %v", runErr)
 	}
 }
 

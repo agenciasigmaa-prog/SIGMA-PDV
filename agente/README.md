@@ -48,14 +48,34 @@ mexer no agente:
 
 ```
 cd agente
+# 1. bump `Version` em internal/httpapi/buildconfig.go primeiro
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/ImpressoraPDVSigma.exe ./cmd/agente
 cp dist/ImpressoraPDVSigma.exe ../restaurante/public/downloads/ImpressoraPDVSigma.exe
+sha256sum ../restaurante/public/downloads/ImpressoraPDVSigma.exe
 ```
 
 Depois é só o deploy normal do `restaurante` pegar o arquivo novo — não tem
 step de build adicional, `public/` é copiado como está. Isso também
 significa que o binário fica versionado no git como qualquer outro arquivo
 estático (~7 MB); é intencional nesta fase, não um descuido.
+
+**Passo extra desde o auto-update (ver seção abaixo): atualizar também
+`restaurante/public/downloads/latest.json`** com a versão nova e o SHA-256
+do `sha256sum` acima:
+
+```json
+{
+  "version": "1.2.0",
+  "url": "/downloads/ImpressoraPDVSigma.exe",
+  "sha256": "<saída do sha256sum, só o hash>"
+}
+```
+
+Esquecer esse arquivo não quebra nada na hora (o `.exe` novo continua
+baixável manualmente), mas as estações já instaladas nunca vão detectar a
+versão nova sozinhas — o `Version` do binário e o `version` do
+`latest.json` são comparados numericamente pelo pacote `autoupdate`, e são
+duas fontes de verdade que precisam ser bumpadas juntas.
 
 ## Instalação numa estação do restaurante
 
@@ -102,20 +122,59 @@ impressora-pdv-sigma.log", em vez de sumir sem explicação. Se isso acontecer,
 confira no Gerenciador de Tarefas (aba Detalhes) se há mais de um
 `ImpressoraPDVSigma.exe` rodando e finalize os antigos.
 
+## Auto-update
+
+O agente se atualiza sozinho — sem isso, um fix (como o da allowlist de
+origem abaixo, que ficou parado em produção até alguém reinstalar na mão)
+só chega nas estações já instaladas se alguém no restaurante lembrar de
+baixar o `.exe` de novo. Implementado em `internal/autoupdate/`:
+
+- **No início de cada execução**, o agente confere
+  `restaurante/public/downloads/latest.json` (mesmo domínio de produção já
+  confiável); se a versão de lá for mais nova que a rodando, baixa o `.exe`,
+  confere o SHA-256 declarado no manifesto e só então troca — antes mesmo
+  de abrir a bandeja/servidor deste processo. Cobre o caso comum: o caixa
+  liga o computador de manhã, o "Iniciar com o Windows" sobe o agente, e
+  ele já entra na versão certa.
+- **A cada 6h enquanto já está rodando**, repete a mesma checagem em
+  segundo plano; se achar versão nova, baixa, valida, e só então pede pra
+  bandeja encerrar como se fosse um "Sair" manual (mesma tolerância de 5s
+  pra impressão em andamento terminar) — nunca troca o binário com o
+  processo ainda no ar.
+- **Depois de trocar**, espera a versão nova responder em `/health` por até
+  15s antes de desistir da antiga de vez. Se não responder (build quebrado,
+  por exemplo), desfaz a troca sozinho e relança a versão anterior — o
+  binário quebrado fica salvo como `ImpressoraPDVSigma.exe.new.broken` ao
+  lado, pra inspeção manual, mas a estação não fica sem agente rodando.
+- A integridade depende de HTTPS + o SHA-256 do manifesto batendo com o
+  `.exe` baixado — mesmo nível de confiança que o download manual já tinha,
+  **não é verificação de assinatura de código**. Se isso vier a importar
+  (o domínio ou o pipeline de deploy for comprometido), é um passo futuro,
+  não coberto aqui.
+- Publicar uma versão nova exige atualizar **duas** fontes de verdade
+  juntas — `Version` em `buildconfig.go` e `restaurante/public/downloads/
+  latest.json` — ver "Publicar uma versão nova" acima.
+
 ## Origens permitidas (segurança)
 
 O agente só responde a requisições cujo header `Origin` esteja numa
 allowlist — qualquer outro site que tente chamar `127.0.0.1:18080` recebe
 `403` e segue o fluxo normal do navegador (não vê nem sabe que o agente
 existe). A allowlist embutida no binário (`internal/httpapi/buildconfig.go`)
-cobre só o app restaurante em desenvolvimento
-(`http://localhost:5175`/`http://127.0.0.1:5175`) — o repo ainda não tem um
-domínio de produção configurado. **Quando o app for publicado**, adicione o
-domínio real em `extraOrigins` dentro do `config.json` de cada estação:
+cobre o app restaurante em desenvolvimento
+(`http://localhost:5175`/`http://127.0.0.1:5175`) e os domínios reais de
+produção (`https://app.assessoriasigma.com.br` e o fallback
+`https://sigma-pdv-restaurante.vercel.app`). Se surgir um domínio de
+produção novo (domínio custom novo, ambiente de staging etc.), adicione-o
+em `defaultAllowedOrigins` e republique (ver "Publicar uma versão nova") —
+o auto-update acima faz esse fix chegar nas estações já instaladas sozinho,
+sem precisar editar `config.json` de cada uma à mão. `extraOrigins` no
+`config.json` de uma estação continua existindo só pra caso específico
+daquela estação:
 
 ```json
 {
-  "extraOrigins": ["https://seu-dominio-de-producao.com.br"]
+  "extraOrigins": ["https://dominio-so-dessa-estacao.com.br"]
 }
 ```
 
@@ -189,6 +248,7 @@ há duas impressões concorrentes na mesma impressora.
 ```
 cmd/agente/main.go              carrega config, sobe fila + servidor HTTP + bandeja
 cmd/agente/icon.ico              ícone embutido via go:embed (marca Sigma)
+internal/autoupdate/autoupdate.go     checa latest.json, baixa, valida e troca o binário sozinho
 internal/config/config.go       config.json ao lado do binário (atômico)
 internal/escpos/renderer.go     DSL -> bytes ESC/POS (CP860, corte parcial)
 internal/printer/spooler_windows.go   winspool.drv via syscall (build windows)
@@ -213,7 +273,16 @@ internal/autostart/autostart_stub.go      stub pra build/test fora do Windows
   uso por uma instância travada de uma execução anterior — finalize todos os
   `ImpressoraPDVSigma.exe` no Gerenciador de Tarefas e rode de novo.
 - **403 no `/print`**: a origem que chamou não está na allowlist — confira
-  `extraOrigins` no `config.json` se for um domínio de produção novo.
+  `extraOrigins` no `config.json` se for um domínio de produção novo (ou
+  publique o domínio na allowlist de build, ver "Origens permitidas", que o
+  auto-update propaga sozinho pras estações já instaladas).
+- **Impressão parou depois de funcionar bem por um tempo**: confira
+  `version` em `http://127.0.0.1:18080/health` contra o `version` de
+  `restaurante/public/downloads/latest.json` — se o agente já tiver
+  atualizado sozinho recentemente, tanto o log
+  (`impressora-pdv-sigma.log`, entradas "autoupdate:") quanto um possível
+  `ImpressoraPDVSigma.exe.new.broken` ao lado do `.exe` mostram se algo deu
+  errado numa troca automática.
 - **Acentuação sai errada no papel**: a página de teste imprime a linha
   `Acentuacao: ção pão açaí Coração` — se sair lixo aí, confirme que a
   impressora suporta CP860 (a maioria das térmicas ESC/POS suporta).
