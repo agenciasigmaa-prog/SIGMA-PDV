@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Bike,
   ClipboardList,
+  CreditCard,
   LayoutDashboard,
   LogOut,
   Megaphone,
@@ -37,6 +38,7 @@ const primaryNavItems = [
 const secondaryNavItems = [
   { to: "/marketing", label: "Marketing", icon: Megaphone },
   { to: "/impressora", label: "Impressora", icon: Printer },
+  { to: "/cobranca", label: "Cobrança", icon: CreditCard },
   { to: "/configuracoes", label: "Configurações", icon: Settings },
 ];
 
@@ -68,7 +70,7 @@ export function RestaurantLayout() {
       <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-card px-4 md:hidden">
         <div className="flex items-center gap-2">
           <img src={sigmaLogo} alt="" className="h-6 w-6" />
-          <h1 className="text-base font-bold">Sigma PDV</h1>
+          <h1 className="font-brand text-base">Cardápio SIG</h1>
         </div>
         <button
           onClick={() => setDrawerOpen(true)}
@@ -94,7 +96,7 @@ export function RestaurantLayout() {
         <div className="mb-6 flex items-center justify-between px-2">
           <div className="flex items-center gap-2">
             <img src={sigmaLogo} alt="" className="h-7 w-7" />
-            <h1 className="text-lg font-bold">Sigma PDV</h1>
+            <h1 className="font-brand text-lg">Cardápio SIG</h1>
           </div>
           <button
             onClick={() => setDrawerOpen(false)}
@@ -139,7 +141,7 @@ export function RestaurantLayout() {
       <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card p-4 md:fixed md:inset-y-0 md:left-0 md:z-30 md:flex">
         <div className="mb-6 flex items-center gap-2 px-2">
           <img src={sigmaLogo} alt="" className="h-7 w-7" />
-          <h1 className="text-lg font-bold">Sigma PDV</h1>
+          <h1 className="font-brand text-lg">Cardápio SIG</h1>
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto">
           {primaryNavItems.map(({ to, label, icon: Icon }) => (
