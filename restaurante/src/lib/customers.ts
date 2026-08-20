@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "./supabase";
 
 export type CustomerOrderItem = { product_name: string; category_name: string | null; quantity: number };
@@ -34,86 +34,111 @@ type RawOrder = {
 };
 type RawProfile = { id: string; full_name: string | null; email: string | null; phone: string | null; address: string | null };
 
-// Clientes que já pediram NESTE restaurante. O cadastro (profiles) em si é
-// universal na plataforma — o mesmo cliente pode ter pedido de outros
-// restaurantes também — mas aqui só agregamos e mostramos o histórico dele
-// COM ESTE restaurante: a query de orders já é filtrada por restaurant_id, e
-// a RLS de profiles (profiles_select_restaurant_customers) só libera ler o
-// perfil de quem tem pelo menos um pedido aqui, então não há como um
-// restaurante "descobrir" cliente que nunca pediu com ele.
+// Clientes deste restaurante: quem já pediu ali OU já se cadastrou/logou no
+// cardápio dali (restaurant_customer_links, ver 0058_restaurant_customer_links.sql
+// — um cliente pode aparecer sem nenhum pedido ainda, só por ter criado
+// conta/logado). O cadastro (profiles) em si é universal na plataforma — o
+// mesmo cliente pode estar vinculado a vários restaurantes — mas aqui só
+// agregamos e mostramos o histórico dele COM ESTE restaurante: a RLS de
+// profiles (profiles_select_restaurant_customers) só libera ler o perfil de
+// quem tem pedido OU vínculo aqui, então não há como um restaurante
+// "descobrir" cliente que nunca pediu nem logou com ele.
 export function useCustomers(restaurantId: string | null) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!restaurantId) {
       setLoading(false);
       return;
     }
-    let cancelled = false;
     setLoading(true);
 
-    (async () => {
-      // order_items tem duas FKs pra products (product_id e
-      // half_flavor_product_id) — precisa nomear a constraint, senão o
-      // PostgREST não sabe qual delas embutir (mesmo caso de orders.ts).
-      const { data: orders, error: ordersError } = await supabase
+    // order_items tem duas FKs pra products (product_id e
+    // half_flavor_product_id) — precisa nomear a constraint, senão o
+    // PostgREST não sabe qual delas embutir (mesmo caso de orders.ts).
+    const [{ data: orders, error: ordersError }, { data: links }] = await Promise.all([
+      supabase
         .from("orders")
         .select(
           "id, customer_id, total, order_type, status, created_at, order_items(quantity, products!order_items_product_id_fkey(name, categories(name)))",
         )
         .eq("restaurant_id", restaurantId)
         .not("customer_id", "is", null)
-        .order("created_at", { ascending: false });
-      if (cancelled) return;
-      if (ordersError) {
-        setLoading(false);
-        return;
-      }
-
-      const rawOrders = (orders ?? []) as unknown as RawOrder[];
-      const customerIds = [...new Set(rawOrders.map((o) => o.customer_id).filter((id): id is string => !!id))];
-      if (customerIds.length === 0) {
-        setCustomers([]);
-        setLoading(false);
-        return;
-      }
-
-      const { data: profiles } = await supabase
-        .from("profiles")
-        .select("id, full_name, email, phone, address")
-        .in("id", customerIds);
-      if (cancelled) return;
-
-      const byCustomer = new Map<string, Customer>();
-      for (const p of (profiles ?? []) as RawProfile[]) {
-        byCustomer.set(p.id, { id: p.id, full_name: p.full_name, email: p.email, phone: p.phone, address: p.address, orders: [] });
-      }
-      for (const o of rawOrders) {
-        const customer = o.customer_id ? byCustomer.get(o.customer_id) : undefined;
-        if (!customer) continue;
-        customer.orders.push({
-          id: o.id,
-          total: Number(o.total),
-          order_type: o.order_type,
-          status: o.status,
-          created_at: o.created_at,
-          items: (o.order_items ?? []).map((item) => ({
-            product_name: item.products?.name ?? "Produto removido",
-            category_name: item.products?.categories?.name ?? null,
-            quantity: item.quantity,
-          })),
-        });
-      }
-
-      setCustomers([...byCustomer.values()].sort((a, b) => b.orders.length - a.orders.length));
+        .order("created_at", { ascending: false }),
+      supabase.from("restaurant_customer_links").select("customer_id").eq("restaurant_id", restaurantId),
+    ]);
+    if (ordersError) {
       setLoading(false);
-    })();
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-    };
+    const rawOrders = (orders ?? []) as unknown as RawOrder[];
+    const orderCustomerIds = rawOrders.map((o) => o.customer_id).filter((id): id is string => !!id);
+    const linkCustomerIds = (links ?? []).map((l) => l.customer_id as string);
+    const customerIds = [...new Set([...orderCustomerIds, ...linkCustomerIds])];
+    if (customerIds.length === 0) {
+      setCustomers([]);
+      setLoading(false);
+      return;
+    }
+
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("id, full_name, email, phone, address")
+      .in("id", customerIds);
+
+    const byCustomer = new Map<string, Customer>();
+    for (const p of (profiles ?? []) as RawProfile[]) {
+      byCustomer.set(p.id, { id: p.id, full_name: p.full_name, email: p.email, phone: p.phone, address: p.address, orders: [] });
+    }
+    for (const o of rawOrders) {
+      const customer = o.customer_id ? byCustomer.get(o.customer_id) : undefined;
+      if (!customer) continue;
+      customer.orders.push({
+        id: o.id,
+        total: Number(o.total),
+        order_type: o.order_type,
+        status: o.status,
+        created_at: o.created_at,
+        items: (o.order_items ?? []).map((item) => ({
+          product_name: item.products?.name ?? "Produto removido",
+          category_name: item.products?.categories?.name ?? null,
+          quantity: item.quantity,
+        })),
+      });
+    }
+
+    setCustomers([...byCustomer.values()].sort((a, b) => b.orders.length - a.orders.length));
+    setLoading(false);
   }, [restaurantId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Cadastro/login (restaurant_customer_links) ou pedido novo (orders) já
+  // atualiza a lista sozinho, sem precisar dar F5 — mesmo padrão de realtime
+  // já usado em orders.ts (useIncomingOrders).
+  useEffect(() => {
+    if (!restaurantId) return;
+    const channel = supabase
+      .channel(`clientes-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "restaurant_customer_links", filter: `restaurant_id=eq.${restaurantId}` },
+        load,
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "orders", filter: `restaurant_id=eq.${restaurantId}` },
+        load,
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [restaurantId, load]);
 
   return { customers, loading };
 }

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { supabase } from "./supabase";
 import { initMetaPixel } from "./metaPixel";
+import { useSession } from "./useSession";
 
 type RestaurantInfo = {
   restaurantId: string;
@@ -37,6 +38,7 @@ export function TableProvider({
   const [info, setInfo] = useState<RestaurantInfo | null>(null);
   const lookupColumn = slug ? "slug" : "id";
   const lookupValue = slug ?? restaurantId;
+  const { session, isRealCustomer } = useSession();
 
   useEffect(() => {
     if (!lookupValue) {
@@ -82,6 +84,22 @@ export function TableProvider({
   useEffect(() => {
     if (info?.metaPixelId) initMetaPixel(info.metaPixelId);
   }, [info?.metaPixelId]);
+
+  // Criar conta ou logar no cardápio já vincula o cliente a ESTE
+  // restaurante (aparece na aba Clientes de restaurante/), mesmo sem nenhum
+  // pedido ainda — antes só um pedido feito criava esse vínculo. Upsert
+  // idempotente (ignora se já existe); o mesmo cliente pode acumular um
+  // vínculo por restaurante cujo cardápio visitou logado.
+  useEffect(() => {
+    if (!info || !isRealCustomer || !session) return;
+    supabase
+      .from("restaurant_customer_links")
+      .upsert(
+        { restaurant_id: info.restaurantId, customer_id: session.user.id },
+        { onConflict: "restaurant_id,customer_id", ignoreDuplicates: true },
+      )
+      .then(() => {});
+  }, [info, isRealCustomer, session]);
 
   // Aplica a cor da marca só enquanto esse restaurante está montado — some se
   // sair pra uma tela sem contexto de restaurante.

@@ -5,8 +5,8 @@ import { supabase } from "./supabase";
 export type CustomerAddress = { id: string; label: string | null; address_text: string };
 
 // "Casa"/"Trabalho" ganham ícone próprio; qualquer outro nome (ou sem nome)
-// cai no pin genérico — usado tanto no checkout (CartDrawer) quanto no
-// Perfil (CustomerProfileSheet), pra não duplicar essa lógica nos dois.
+// cai no pin genérico — usado tanto no checkout (CartDrawer) quanto na aba
+// Meu perfil (AccountOverlay), pra não duplicar essa lógica nos dois.
 export function addressIcon(label: string | null) {
   const normalized = (label ?? "").trim().toLowerCase();
   if (normalized === "casa") return Home;

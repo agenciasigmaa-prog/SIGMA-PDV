@@ -9,12 +9,13 @@ type Mode = "signup" | "login";
 // automático (ver MesaCardapio.tsx). O cadastro (email/senha/telefone/
 // endereço) fica gravado em `profiles`, que não é escopado por restaurante:
 // o mesmo login vale em qualquer /loja/:restaurantId da plataforma, sem
-// precisar recadastrar. "Continuar com Google" já está com o código pronto,
-// mas só funciona depois que o provider Google for habilitado no painel do
-// Supabase (Authentication → Sign In / Providers) — até lá, o Supabase
-// retorna erro e ele aparece pro usuário como qualquer outro erro de login.
-export function CustomerAuthModal({ onClose, onAuthenticated }: { onClose: () => void; onAuthenticated: () => void }) {
-  const [mode, setMode] = useState<Mode>("signup");
+// precisar recadastrar. "Continuar com Google" fica lado a lado com o
+// cadastro manual (não substitui) — o Google bloqueia OAuth dentro de
+// navegadores embutidos (WebView do Instagram/TikTok/Facebook), e o link de
+// tráfego pago da aba Marketing é feito pra abrir exatamente nesses apps, então
+// só Google deixaria esse cliente sem conseguir logar.
+export function CustomerAuthModal({ onClose, onAuthenticated }: { onClose: () => void; onAuthenticated: (mode: Mode) => void }) {
+  const [mode, setMode] = useState<Mode>("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -48,7 +49,7 @@ export function CustomerAuthModal({ onClose, onAuthenticated }: { onClose: () =>
       setConfirmNotice(true);
       return;
     }
-    onAuthenticated();
+    onAuthenticated("signup");
   }
 
   async function handleLogin() {
@@ -60,21 +61,45 @@ export function CustomerAuthModal({ onClose, onAuthenticated }: { onClose: () =>
       setError(await describeFunctionError(signInError));
       return;
     }
-    onAuthenticated();
+    onAuthenticated("login");
   }
 
-  async function handleGoogle() {
+  function handleGoogle() {
     setError(null);
-    // signInWithOAuth navega a página inteira pro Google e volta — não dá
-    // pra continuar o pedido no mesmo clique. O carrinho já é salvo em
-    // localStorage (CartContext), então ao voltar o cliente só precisa
-    // clicar em "Confirmar pedido" de novo; não precisa de hack de
-    // "pedido pendente" pra sobreviver ao redirect.
-    const { error: oauthError } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: window.location.href },
-    });
-    if (oauthError) setError(await describeFunctionError(oauthError));
+    // O storefront roda em subdomínios ilimitados (*.assessoriasigma.com.br) — o
+    // Google não aceita origem coringa em "Origens JavaScript autorizadas", só
+    // domínios fixos. Por isso o login não roda direto aqui: abre um popup na
+    // "ponte" (restaurante/src/pages/GoogleSignInBridge.tsx), num domínio fixo já
+    // autorizado, que faz o login do Google e devolve só o credential via
+    // postMessage — quem estabelece a sessão é esta aba mesmo, no seu próprio
+    // domínio, então o localStorage do carrinho/sessão fica no lugar certo.
+    const rawNonce = crypto.randomUUID();
+    const bridgeUrl = `https://app.assessoriasigma.com.br/google-signin-bridge?nonce=${encodeURIComponent(rawNonce)}&origin=${encodeURIComponent(window.location.origin)}`;
+    const popup = window.open(bridgeUrl, "google-signin", "width=460,height=620");
+    if (!popup) {
+      setError("O navegador bloqueou o popup de login. Permita popups para este site e tente de novo.");
+      return;
+    }
+
+    function handleMessage(event: MessageEvent) {
+      if (event.origin !== "https://app.assessoriasigma.com.br") return;
+      if (event.data?.type !== "cardapio-sig-google-credential") return;
+      window.removeEventListener("message", handleMessage);
+      supabase.auth
+        .signInWithIdToken({ provider: "google", token: event.data.credential, nonce: rawNonce })
+        .then(async ({ error: idTokenError }) => {
+          if (idTokenError) {
+            setError(await describeFunctionError(idTokenError));
+            return;
+          }
+          // Google não distingue cadastro de login no fluxo atual (mesmo
+          // botão nas duas abas) — trata como "login": se faltar telefone
+          // (Google nunca traz telefone), a regra de telefone obrigatório em
+          // MesaCardapio.tsx já força a tela de perfil de qualquer forma.
+          onAuthenticated("login");
+        });
+    }
+    window.addEventListener("message", handleMessage);
   }
 
   if (confirmNotice) {
@@ -108,16 +133,16 @@ export function CustomerAuthModal({ onClose, onAuthenticated }: { onClose: () =>
 
         <div className="mb-4 flex gap-1 rounded-full bg-muted p-1">
           <button
-            onClick={() => setMode("signup")}
-            className={`flex-1 rounded-full py-1.5 text-xs font-bold ${mode === "signup" ? "bg-card shadow-card" : "text-muted-foreground"}`}
-          >
-            Criar cadastro
-          </button>
-          <button
             onClick={() => setMode("login")}
             className={`flex-1 rounded-full py-1.5 text-xs font-bold ${mode === "login" ? "bg-card shadow-card" : "text-muted-foreground"}`}
           >
             Já tenho conta
+          </button>
+          <button
+            onClick={() => setMode("signup")}
+            className={`flex-1 rounded-full py-1.5 text-xs font-bold ${mode === "signup" ? "bg-card shadow-card" : "text-muted-foreground"}`}
+          >
+            Criar cadastro
           </button>
         </div>
 

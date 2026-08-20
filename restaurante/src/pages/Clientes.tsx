@@ -95,12 +95,12 @@ function CustomerDetail({ customer, onClose }: { customer: Customer; onClose: ()
 }
 
 // Cadastro de cliente é universal na plataforma (profiles não é escopado por
-// restaurante), mas essa tela só mostra quem já pediu NESTE restaurante — a
-// query em useCustomers já filtra por restaurant_id e a RLS
-// (profiles_select_restaurant_customers) só libera ler o perfil de quem tem
-// pedido aqui. A versão do admin (admin/src/pages/Clientes.tsx) é a mesma
-// ideia sem esse filtro, já que admin enxerga clientes de todos os
-// restaurantes.
+// restaurante), mas essa tela só mostra quem já pediu OU já se
+// cadastrou/logou no cardápio DESTE restaurante — a query em useCustomers já
+// filtra por restaurant_id e a RLS (profiles_select_restaurant_customers) só
+// libera ler o perfil de quem tem pedido ou vínculo aqui. A versão do admin
+// (admin/src/pages/Clientes.tsx) é a mesma ideia sem esse filtro, já que
+// admin enxerga clientes de todos os restaurantes.
 export function Clientes() {
   const { profile } = useSession();
   const restaurantId = profile?.restaurant_id ?? null;
@@ -126,7 +126,7 @@ export function Clientes() {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold">Clientes</h2>
-          <p className="text-sm text-muted-foreground">Quem já pediu no seu cardápio — histórico, interesses e frequência.</p>
+          <p className="text-sm text-muted-foreground">Quem já pediu ou se cadastrou no seu cardápio — histórico, interesses e frequência.</p>
         </div>
         <div className="relative">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
@@ -144,7 +144,7 @@ export function Clientes() {
 
       {!loading && filtered.length === 0 && (
         <p className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted-foreground">
-          {customers.length === 0 ? "Nenhum cliente cadastrado pediu ainda." : "Nenhum cliente encontrado pra essa busca."}
+          {customers.length === 0 ? "Ninguém se cadastrou ou pediu ainda." : "Nenhum cliente encontrado pra essa busca."}
         </p>
       )}
 

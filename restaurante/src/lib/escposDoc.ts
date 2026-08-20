@@ -65,6 +65,7 @@ export function buildComandaCozinha(order: IncomingOrder, restaurantName: string
   ];
 
   if (order.customer_name) cmds.push({ op: "text", value: `Cliente: ${order.customer_name}` });
+  if (order.customer_phone) cmds.push({ op: "text", value: `Tel: ${order.customer_phone}` });
   cmds.push({ op: "line" });
 
   for (const item of order.items) {
@@ -108,6 +109,7 @@ export function buildComandaEntrega(order: IncomingOrder, restaurantName: string
   ];
 
   if (order.customer_name) cmds.push({ op: "text", value: `Cliente: ${order.customer_name}`, bold: true });
+  if (order.customer_phone) cmds.push({ op: "text", value: `Tel: ${order.customer_phone}` });
   if (order.delivery_address) {
     cmds.push({ op: "line" });
     cmds.push({ op: "text", value: "ENDERECO", bold: true });

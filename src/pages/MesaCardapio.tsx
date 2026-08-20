@@ -10,8 +10,7 @@ import { PriceChangeDialog } from "../components/PriceChangeDialog";
 import { ProductDetailSheet } from "../components/ProductDetailSheet";
 import { HalfAndHalfChoiceDialog } from "../components/HalfAndHalfChoiceDialog";
 import { CustomerAuthModal } from "../components/CustomerAuthModal";
-import { CustomerProfileSheet } from "../components/CustomerProfileSheet";
-import { MyOrderSheet } from "../components/MyOrderSheet";
+import { AccountOverlay } from "../components/AccountOverlay";
 import { useTableContext } from "../lib/TableContext";
 import { useSession } from "../lib/useSession";
 import { useMyOrder } from "../lib/myOrder";
@@ -38,9 +37,8 @@ export function MesaCardapio() {
   const { restaurantId, restaurantName, logoUrl } = useTableContext();
   const orderType = useOrderChannel();
   const { addresses: savedAddresses, saveAddress } = useCustomerAddresses();
-  const { session, isRealCustomer, profile } = useSession();
+  const { session, isRealCustomer, profile, loading: sessionLoading } = useSession();
   const { order: myOrder, loading: myOrderLoading } = useMyOrder(restaurantId, isRealCustomer ? (session?.user.id ?? null) : null);
-  const [showMyOrder, setShowMyOrder] = useState(false);
   const {
     categories,
     products,
@@ -81,11 +79,28 @@ export function MesaCardapio() {
     null,
   );
   // O que fazer depois de logar: veio do checkout (então submete o pedido
-  // na sequência) ou veio do botão de conta no Header (então só abre o
-  // Perfil) — sem isso, logar pelo botão de conta dispararia submitOrder()
-  // por engano.
+  // na sequência) ou veio do botão de conta no Header (então só fecha o
+  // popup) ou do clique no carrinho — sem isso, logar pelo botão de conta
+  // dispararia submitOrder() por engano.
   const [authIntent, setAuthIntent] = useState<"checkout" | "profile" | "cart" | null>(null);
-  const [showProfile, setShowProfile] = useState(false);
+  // Guarda o resultado da autenticação (modo + intent) até o `profile` do
+  // useSession() terminar de carregar — profile só é buscado DEPOIS que
+  // session muda, então não dá pra decidir nada direto dentro do callback
+  // síncrono onAuthenticated (profile ainda pode estar desatualizado nesse
+  // instante). Um useEffect observando isRealCustomer/profile/sessionLoading
+  // resolve isso quando o dado já estiver pronto de verdade.
+  const [pendingAuth, setPendingAuth] = useState<{ mode: "login" | "signup"; intent: "checkout" | "profile" | "cart" } | null>(null);
+  // Qual seção da tela cheia "Minha conta" está aberta (null = fechada).
+  const [accountSection, setAccountSection] = useState<"profile" | "orders" | null>(null);
+  // Aviso mostrado no topo de "Meu perfil" quando a tela abriu forçada por
+  // falta de telefone — muda o texto conforme veio de um cadastro novo ou de
+  // um pedido bloqueado.
+  const [phoneRequiredNotice, setPhoneRequiredNotice] = useState<"checkout" | "signup" | null>(null);
+  // true quando o cliente foi mandado pra "Meu perfil" especificamente por
+  // causa do telefone faltando na hora de confirmar o pedido — ao salvar o
+  // telefone, retoma o pedido sozinho em vez de deixá-lo parado na tela de
+  // perfil sem entender por quê.
+  const [pendingCheckoutAfterProfile, setPendingCheckoutAfterProfile] = useState(false);
   // Categoria destacada nas abas fixas — segue a seção mais visível ao rolar
   // (scroll-spy), não uma tela separada. "outros" é o id sintético dos
   // produtos sem categoria.
@@ -262,13 +277,26 @@ export function MesaCardapio() {
     };
   }, [deliveryDetails.selectedSavedAddressId, orderType, savedAddresses, restaurantId]);
 
-  async function submitOrder() {
+  // phoneOverride existe pro caso "acabou de salvar o telefone e o pedido
+  // estava esperando" (handlePhoneSaved) — o profile do useSession() aqui
+  // só se atualiza reagindo a mudança de sessão, não a um update de perfil
+  // feito de dentro do AccountOverlay (instância separada do hook), então
+  // profile?.phone ainda estaria null nesse instante mesmo já tendo sido
+  // salvo no banco. Sem override, o pedido sairia sem telefone.
+  async function submitOrder(phoneOverride?: string) {
     setSubmitting(true);
     setError(null);
+    const phone = phoneOverride ?? profile?.phone;
     const { data, error: fnError } = await supabase.functions.invoke("place-dine-in-order", {
       body: {
         restaurant_id: restaurantId,
         customer_name: customerName,
+        // Telefone do perfil do cliente logado — aparece na comanda pro
+        // staff/entregador, e é o mesmo campo usado pra vincular pedidos
+        // lançados manualmente quando essa conta ainda não existia. Nunca
+        // deveria faltar aqui de verdade: goToLoginOrSubmit()/pendingAuth já
+        // bloqueiam o checkout até ter telefone (ver useEffect acima).
+        ...(phone ? { customer_phone: phone } : {}),
         order_type: orderType,
         table_label: orderType === "dine_in" ? tableLabel : undefined,
         // Pagamento é perguntado pra mesa também, não só delivery — payload
@@ -343,7 +371,64 @@ export function MesaCardapio() {
       setAuthIntent("checkout");
       return;
     }
+    // Telefone é obrigatório pra pedir, não só um campo do formulário de
+    // cadastro — cliente que entrou com Google (nunca traz telefone) ou uma
+    // conta antiga sem telefone preenchido fica bloqueado aqui até completar.
+    if (!profile?.phone) {
+      setPendingCheckoutAfterProfile(true);
+      setPhoneRequiredNotice("checkout");
+      setAccountSection("profile");
+      return;
+    }
     await submitOrder();
+  }
+
+  // Resolve o que fazer depois de uma autenticação (login ou cadastro) só
+  // quando profile já tiver carregado de verdade — ver comentário na
+  // declaração de pendingAuth. Login nunca abre "Minha conta" sozinho, em
+  // nenhum caso (mesmo vindo do ícone de conta) — só cadastro sem telefone
+  // faz sentido abrir automaticamente, e checkout sem telefone é bloqueado
+  // igual a goToLoginOrSubmit acima.
+  useEffect(() => {
+    if (!pendingAuth || !isRealCustomer || sessionLoading) return;
+    const { mode, intent } = pendingAuth;
+    setPendingAuth(null);
+    const hasPhone = !!profile?.phone;
+
+    if (intent === "cart") {
+      setCartOpen(true);
+      return;
+    }
+    if (intent === "checkout") {
+      if (hasPhone) {
+        submitOrder();
+      } else {
+        setPendingCheckoutAfterProfile(true);
+        setPhoneRequiredNotice(mode === "signup" ? "signup" : "checkout");
+        setAccountSection("profile");
+      }
+      return;
+    }
+    // intent === "profile"
+    if (mode === "signup" && !hasPhone) {
+      setPhoneRequiredNotice("signup");
+      setAccountSection("profile");
+    }
+    // login (ou cadastro que já trouxe telefone): não abre nada sozinho.
+  }, [pendingAuth, isRealCustomer, profile, sessionLoading]);
+
+  // Chamado pelo AccountOverlay quando o telefone é salvo com sucesso —
+  // retoma o pedido que ficou esperando, se houver. Recebe o telefone salvo
+  // direto (não só um sinal) e passa pra submitOrder como override — ver
+  // comentário em submitOrder sobre por que não dá pra confiar em
+  // profile?.phone logo em seguida a esse save.
+  function handlePhoneSaved(phone: string) {
+    setPhoneRequiredNotice(null);
+    if (pendingCheckoutAfterProfile) {
+      setPendingCheckoutAfterProfile(false);
+      setAccountSection(null);
+      submitOrder(phone);
+    }
   }
 
   // Dispara uma única vez, só aqui — nunca em background, nunca de novo
@@ -460,7 +545,7 @@ export function MesaCardapio() {
         logoUrl={logoUrl}
         cartCount={totalCount}
         onCartClick={handleCartClick}
-        onAccountClick={() => (isRealCustomer ? setShowProfile(true) : setAuthIntent("profile"))}
+        onAccountClick={() => (isRealCustomer ? setAccountSection("profile") : setAuthIntent("profile"))}
         showSearch={showSearchBar}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -468,7 +553,7 @@ export function MesaCardapio() {
         onCollapseSearch={handleCollapseSearch}
         showMyOrder={isRealCustomer}
         myOrderActive={!!myOrder && myOrder.status !== "completed" && myOrder.status !== "cancelled"}
-        onMyOrderClick={() => setShowMyOrder(true)}
+        onMyOrderClick={() => setAccountSection("orders")}
       />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-28 pt-4 md:px-6 md:pt-6">
@@ -597,19 +682,27 @@ export function MesaCardapio() {
       {authIntent && (
         <CustomerAuthModal
           onClose={() => setAuthIntent(null)}
-          onAuthenticated={() => {
-            const intent = authIntent;
+          onAuthenticated={(mode) => {
+            setPendingAuth({ mode, intent: authIntent });
             setAuthIntent(null);
-            if (intent === "checkout") submitOrder();
-            else if (intent === "cart") setCartOpen(true);
-            else setShowProfile(true);
           }}
         />
       )}
 
-      {showProfile && <CustomerProfileSheet onClose={() => setShowProfile(false)} />}
-
-      {showMyOrder && <MyOrderSheet order={myOrder} loading={myOrderLoading} onClose={() => setShowMyOrder(false)} />}
+      {accountSection && (
+        <AccountOverlay
+          section={accountSection}
+          onSectionChange={setAccountSection}
+          onClose={() => {
+            setAccountSection(null);
+            setPhoneRequiredNotice(null);
+          }}
+          order={myOrder}
+          orderLoading={myOrderLoading}
+          phoneRequiredNotice={phoneRequiredNotice}
+          onPhoneSaved={handlePhoneSaved}
+        />
+      )}
 
       {priceCheck && (
         <PriceChangeDialog

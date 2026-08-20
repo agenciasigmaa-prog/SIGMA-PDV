@@ -47,6 +47,7 @@ export type OrderPaymentSplit = {
 export type IncomingOrder = {
   id: string;
   customer_name: string;
+  customer_phone: string | null;
   table_label: string;
   pickup_code: string | null;
   delivery_address: { text: string } | null;
@@ -105,7 +106,7 @@ function startOfToday(): string {
 // escuta pedido novo em qualquer tela, não só em /pedidos) precisa do mesmo
 // formato de linha que o board usa.
 const ORDER_SELECT =
-  "id, customer_name, table_label, pickup_code, delivery_address, status, order_type, payment_status, payment_method, change_for, notes, subtotal, discount_amount, service_charge_amount, delivery_fee_amount, total, created_at, status_changed_at, waiter_id, waiters(name), delivery_driver_id, delivery_drivers(name), neighborhood_id, neighborhood_name, order_items(id, quantity, unit_price, half_flavor_name, notes, products!order_items_product_id_fkey(name), order_item_addons(name, quantity, unit_price), order_item_combo_choices(group_name, option_name), order_item_removed_ingredients(ingredient_name)), order_payment_splits(id, label, amount, payment_method, status, paid_at, voided_at, order_payment_split_payments(method, amount))";
+  "id, customer_name, customer_phone, table_label, pickup_code, delivery_address, status, order_type, payment_status, payment_method, change_for, notes, subtotal, discount_amount, service_charge_amount, delivery_fee_amount, total, created_at, status_changed_at, waiter_id, waiters(name), delivery_driver_id, delivery_drivers(name), neighborhood_id, neighborhood_name, order_items(id, quantity, unit_price, half_flavor_name, notes, products!order_items_product_id_fkey(name), order_item_addons(name, quantity, unit_price), order_item_combo_choices(group_name, option_name), order_item_removed_ingredients(ingredient_name)), order_payment_splits(id, label, amount, payment_method, status, paid_at, voided_at, order_payment_split_payments(method, amount))";
 
 type RawItem = {
   id: string;
@@ -131,6 +132,7 @@ type RawSplit = {
 type RawOrder = {
   id: string;
   customer_name: string | null;
+  customer_phone: string | null;
   table_label: string | null;
   pickup_code: string | null;
   delivery_address: { text: string } | null;
@@ -161,6 +163,7 @@ function mapRawOrder(order: RawOrder): IncomingOrder {
   return {
     id: order.id,
     customer_name: order.customer_name ?? "Sem nome",
+    customer_phone: order.customer_phone,
     table_label: order.table_label ?? "?",
     pickup_code: order.pickup_code,
     delivery_address: order.delivery_address,

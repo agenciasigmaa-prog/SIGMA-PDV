@@ -7,6 +7,7 @@ import { useDeliveryDrivers } from "../lib/deliveryDrivers";
 import { computeHalfAndHalfPrice, type HalfAndHalfPricingMode } from "../lib/halfAndHalfPricing";
 import { useNeighborhoods } from "../lib/neighborhoods";
 import { useRemovableIngredients } from "../lib/removableIngredients";
+import { useRestaurantCustomers } from "../lib/restaurantCustomers";
 import { useWaiters } from "../lib/waiters";
 import { ItemCustomizeModal } from "./ItemCustomizeModal";
 
@@ -52,7 +53,18 @@ export function ManualOrderModal({
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
   const [orderType, setOrderType] = useState<"dine_in" | "pickup" | "delivery">("dine_in");
-  const [customerName, setCustomerName] = useState("");
+  // Fluxo de identificação do cliente: por padrão busca uma conta já
+  // existente (telefone, e-mail ou nome — cliente achado, não precisa digitar
+  // nome de novo, já vem da conta). "Cliente não cadastrado" troca pra dois
+  // campos livres (nome + telefone), pro caso mais comum de quem liga ou
+  // chega no balcão sem conta — o telefone digitado aí é o que o pedido usa
+  // pra se auto-vincular depois, quando essa pessoa criar a conta (ver
+  // 0056_order_customer_phone_autolink.sql).
+  const [notRegistered, setNotRegistered] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [linkedCustomerId, setLinkedCustomerId] = useState("");
+  const [guestName, setGuestName] = useState("");
+  const [guestPhone, setGuestPhone] = useState("");
   const [tableLabel, setTableLabel] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [waiterId, setWaiterId] = useState("");
@@ -65,6 +77,7 @@ export function ManualOrderModal({
   const [createdPickupCode, setCreatedPickupCode] = useState<string | null>(null);
   const [pendingAddonProduct, setPendingAddonProduct] = useState<ManualProduct | null>(null);
 
+  const { customers } = useRestaurantCustomers(restaurantId);
   const { waiters } = useWaiters(restaurantId);
   const activeWaiters = waiters.filter((w) => w.active);
   const { drivers } = useDeliveryDrivers(restaurantId);
@@ -169,8 +182,51 @@ export function ManualOrderModal({
   const changeForValue = paymentMethod === "cash" && changeFor.trim() !== "" ? Number(changeFor) : null;
   const changeForInvalid = changeForValue != null && changeForValue < total;
 
+  const customerSearchResults = useMemo(() => {
+    const query = customerSearch.trim().toLowerCase();
+    if (!query || linkedCustomerId) return [];
+    return customers
+      .filter((c) => {
+        const phone = (c.phone ?? "").toLowerCase();
+        const email = (c.email ?? "").toLowerCase();
+        const name = (c.full_name ?? "").toLowerCase();
+        // "Começa com": bate no início do telefone/e-mail, ou no início de
+        // qualquer palavra do nome (assim "silva" acha "João Silva" também,
+        // não só nomes que começam com "silva").
+        return (
+          phone.startsWith(query) ||
+          email.startsWith(query) ||
+          name.split(" ").some((word) => word.startsWith(query))
+        );
+      })
+      .slice(0, 8);
+  }, [customers, customerSearch, linkedCustomerId]);
+
+  const selectedCustomer = customers.find((c) => c.id === linkedCustomerId) ?? null;
+
+  function handleSelectCustomer(id: string) {
+    setLinkedCustomerId(id);
+    const customer = customers.find((c) => c.id === id);
+    setCustomerSearch(customer?.full_name ?? customer?.phone ?? customer?.email ?? "");
+  }
+
+  function handleToggleNotRegistered(checked: boolean) {
+    setNotRegistered(checked);
+    setLinkedCustomerId("");
+    setCustomerSearch("");
+  }
+
+  // Cliente achado pela busca: nome/telefone vêm da própria conta, não
+  // precisa (nem deixa) digitar de novo. "Não cadastrado": nome/telefone são
+  // o que o caixa digitou nos campos livres.
+  const effectiveCustomerName = notRegistered
+    ? guestName.trim()
+    : (selectedCustomer?.full_name ?? selectedCustomer?.phone ?? selectedCustomer?.email ?? "");
+  const effectiveCustomerPhone = notRegistered ? guestPhone.trim() : (selectedCustomer?.phone ?? "");
+  const customerReady = notRegistered ? !!guestName.trim() && !!guestPhone.trim() : !!selectedCustomer;
+
   async function handleSubmit() {
-    if (cart.length === 0 || !customerName.trim() || submitting) return;
+    if (cart.length === 0 || !customerReady || submitting) return;
     if (orderType === "dine_in" && !tableLabel.trim()) return;
     if (orderType === "delivery" && (!deliveryAddress.trim() || !neighborhoodId)) return;
     if (changeForInvalid) return;
@@ -179,11 +235,26 @@ export function ManualOrderModal({
     const { data, error: fnError } = await supabase.functions.invoke("place-dine-in-order", {
       body: {
         restaurant_id: restaurantId,
-        customer_name: customerName.trim(),
+        customer_name: effectiveCustomerName,
+        // Telefone é a "indexação" do pedido quando não tem conta vinculada —
+        // se já existir uma conta com esse número, o servidor vincula na hora;
+        // senão fica gravado como convidado e vincula sozinho automaticamente
+        // quando essa pessoa criar/completar a conta com esse mesmo telefone
+        // (ver trigger profiles_link_guest_orders, 0056_order_customer_phone_autolink.sql).
+        customer_phone: effectiveCustomerPhone,
+        // Linka o pedido a uma conta de cliente já existente (opcional —
+        // fica sem cliente vinculado se deixado em branco, mesmo
+        // comportamento de antes). O servidor confere de novo que o id é
+        // mesmo uma conta de cliente antes de gravar (nunca confia só na
+        // seleção feita aqui).
+        ...(linkedCustomerId ? { customer_id: linkedCustomerId } : {}),
         order_type: orderType,
         ...(orderType === "dine_in" ? { table_label: tableLabel.trim() } : {}),
         ...(orderType === "delivery" ? { delivery_address: deliveryAddress.trim(), neighborhood_id: neighborhoodId } : {}),
-        ...(waiterId ? { waiter_id: waiterId } : {}),
+        // Só manda waiter_id pra mesa — sem isso, escolher um garçom com o
+        // formulário em "Mesa" e depois trocar pra "Entrega"/"Retirada"
+        // mandaria esse valor preso junto, mesmo com o campo já escondido.
+        ...(orderType === "dine_in" && waiterId ? { waiter_id: waiterId } : {}),
         ...(orderType === "delivery" && deliveryDriverId ? { delivery_driver_id: deliveryDriverId } : {}),
         ...(orderType === "delivery" && paymentMethod ? { payment_method: paymentMethod } : {}),
         ...(orderType === "delivery" && changeForValue != null ? { change_for: changeForValue } : {}),
@@ -362,13 +433,76 @@ export function ManualOrderModal({
           </div>
 
           <div className="space-y-2">
-            <input
-              type="text"
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Nome do cliente"
-              className="w-full rounded-xl border border-border px-3 py-2.5 text-sm"
-            />
+            {!notRegistered ? (
+              <div className="relative">
+                <input
+                  type="text"
+                  value={customerSearch}
+                  onChange={(e) => {
+                    setCustomerSearch(e.target.value);
+                    if (linkedCustomerId) setLinkedCustomerId("");
+                  }}
+                  placeholder="Buscar cliente por telefone, e-mail ou nome"
+                  className="w-full rounded-xl border border-border px-3 py-2.5 text-sm"
+                />
+                {customerSearchResults.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-xl border border-border bg-card shadow-elevated">
+                    {customerSearchResults.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => handleSelectCustomer(c.id)}
+                        className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-muted"
+                      >
+                        <span className="font-semibold">{c.full_name ?? "Sem nome"}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {[c.phone, c.email].filter(Boolean).join(" · ") || "—"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {selectedCustomer && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Vinculado a <span className="font-semibold">{selectedCustomer.full_name ?? "cliente"}</span>
+                    {selectedCustomer.phone ? ` — ${selectedCustomer.phone}` : ""}
+                  </p>
+                )}
+                {!selectedCustomer && customerSearch.trim() && customerSearchResults.length === 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">Nenhum cliente encontrado com esse cadastro.</p>
+                )}
+              </div>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  value={guestName}
+                  onChange={(e) => setGuestName(e.target.value)}
+                  placeholder="Nome do cliente"
+                  className="w-full rounded-xl border border-border px-3 py-2.5 text-sm"
+                />
+                <input
+                  type="tel"
+                  value={guestPhone}
+                  onChange={(e) => setGuestPhone(e.target.value)}
+                  placeholder="Telefone do cliente"
+                  className="w-full rounded-xl border border-border px-3 py-2.5 text-sm"
+                />
+                <p className="text-xs text-muted-foreground">
+                  O telefone identifica o pedido — quando essa pessoa se cadastrar com esse número, o pedido é
+                  vinculado à conta dela automaticamente.
+                </p>
+              </>
+            )}
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={notRegistered}
+                onChange={(e) => handleToggleNotRegistered(e.target.checked)}
+                className="h-4 w-4 rounded border-border"
+              />
+              Cliente não cadastrado
+            </label>
             {orderType === "dine_in" && (
               <input
                 type="text"
@@ -446,7 +580,7 @@ export function ManualOrderModal({
                 )}
               </>
             )}
-            {activeWaiters.length > 0 && (
+            {orderType === "dine_in" && activeWaiters.length > 0 && (
               <select
                 value={waiterId}
                 onChange={(e) => setWaiterId(e.target.value)}
@@ -491,7 +625,7 @@ export function ManualOrderModal({
             onClick={handleSubmit}
             disabled={
               cart.length === 0 ||
-              !customerName.trim() ||
+              !customerReady ||
               (orderType === "dine_in" && !tableLabel.trim()) ||
               (orderType === "delivery" && (!deliveryAddress.trim() || !neighborhoodId)) ||
               changeForInvalid ||

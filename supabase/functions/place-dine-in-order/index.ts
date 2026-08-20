@@ -28,17 +28,20 @@ Deno.serve(async (req) => {
     const { user, serviceClient } = await requireCustomer(req);
 
     // Pedido manual lançado pelo staff (telefone/balcão) não tem cliente de
-    // verdade por trás — se quem chamou é staff/admin, customer_id fica null
-    // em vez do id do funcionário (senão o histórico de "clientes" ficaria
-    // contaminado com o próprio staff).
+    // verdade por trás por padrão — se quem chamou é staff/admin, customer_id
+    // fica null em vez do id do funcionário (senão o histórico de "clientes"
+    // ficaria contaminado com o próprio staff). Staff pode opcionalmente
+    // linkar esse pedido a uma conta de cliente já existente (ver
+    // requestedCustomerId mais abaixo, depois que body é lido).
     const { data: callerProfile } = await serviceClient.from("profiles").select("role").eq("id", user.id).maybeSingle();
     const callerIsStaff =
       callerProfile?.role === "restaurant_owner" || callerProfile?.role === "restaurant_staff" || callerProfile?.role === "admin";
-    const customer_id = callerIsStaff ? null : user.id;
+    let customer_id: string | null = callerIsStaff ? null : user.id;
 
     const body = await req.json().catch(() => ({}));
     const restaurant_id = String(body.restaurant_id ?? "");
     const customer_name = String(body.customer_name ?? "").trim();
+    const customer_phone = String(body.customer_phone ?? "").trim() || null;
     const table_label = String(body.table_label ?? "").trim();
     const delivery_address_text = String(body.delivery_address ?? "").trim();
     const order_type = body.order_type === "pickup" ? "pickup" : body.order_type === "delivery" ? "delivery" : "dine_in";
@@ -62,6 +65,12 @@ Deno.serve(async (req) => {
     // mesmo crivo de callerIsStaff já usado acima pra customer_id.
     const requestedWaiterId = callerIsStaff && body.waiter_id ? String(body.waiter_id) : "";
     const requestedDeliveryDriverId = callerIsStaff && body.delivery_driver_id ? String(body.delivery_driver_id) : "";
+    // Staff pode linkar o pedido manual a uma conta de cliente já existente
+    // (ManualOrderModal — busca só entre clientes que já pediram nesse
+    // restaurante, ver profiles_select_restaurant_customers). Confere de
+    // novo aqui que o id é mesmo uma conta role=customer antes de gravar —
+    // nunca confia só na seleção feita na tela.
+    const requestedCustomerId = callerIsStaff && body.customer_id ? String(body.customer_id) : "";
     const requestedNeighborhoodId = String(body.neighborhood_id ?? "");
 
     // Não existe mais mesa mapeada por QR — o cliente/staff digita o próprio
@@ -109,11 +118,47 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Garçom inválido/de outro restaurante não deve travar o pedido inteiro
-    // (atribuir garçom não é crítico o bastante pra bloquear a criação) — só
-    // ignora e grava null.
+    // Cliente linkado manualmente: precisa ser mesmo uma conta com
+    // role=customer (nunca aceita id de outro staff/admin) — inválido ou
+    // não encontrado não trava o pedido, só fica sem cliente vinculado,
+    // igual ao comportamento padrão de antes desta feature.
+    if (requestedCustomerId) {
+      const { data: linkedCustomer } = await serviceClient
+        .from("profiles")
+        .select("id")
+        .eq("id", requestedCustomerId)
+        .eq("role", "customer")
+        .maybeSingle();
+      customer_id = linkedCustomer?.id ?? null;
+    }
+
+    // Sem cliente linkado ainda (staff não escolheu ninguém no dropdown, ou não
+    // tinha ninguém pra escolher) mas veio telefone: tenta achar uma conta já
+    // existente com esse número antes de deixar como "convidado". Se não achar
+    // agora, customer_phone fica gravado no pedido mesmo assim — o trigger
+    // profiles_link_guest_orders (ver 0056) vincula automaticamente depois,
+    // quando essa pessoa criar/completar a conta com o mesmo telefone.
+    if (!customer_id && customer_phone) {
+      const normalizedPhone = customer_phone.replace(/\D/g, "");
+      if (normalizedPhone) {
+        const { data: matchedCustomers } = await serviceClient
+          .from("profiles")
+          .select("id, phone")
+          .eq("role", "customer")
+          .not("phone", "is", null);
+        const match = (matchedCustomers ?? []).find((p) => (p.phone ?? "").replace(/\D/g, "") === normalizedPhone);
+        if (match) customer_id = match.id;
+      }
+    }
+
+    // Garçom só faz sentido pra mesa — pedido de retirada/entrega não tem
+    // atendimento de mesa, então ignora waiter_id nesses canais mesmo que o
+    // client mande (nunca confia só na tela esconder o campo). Inválido/de
+    // outro restaurante também não deve travar o pedido inteiro (atribuir
+    // garçom não é crítico o bastante pra bloquear a criação) — só ignora e
+    // grava null.
     let waiter_id: string | null = null;
-    if (requestedWaiterId) {
+    if (order_type === "dine_in" && requestedWaiterId) {
       const { data: waiter } = await serviceClient
         .from("waiters")
         .select("id")
@@ -143,6 +188,13 @@ Deno.serve(async (req) => {
     let neighborhood_id: string | null = null;
     let neighborhood_name: string | null = null;
     let delivery_fee_amount = 0;
+    // Congelado do ajuste de alta demanda no momento do pedido (ver
+    // 0053_order_demand_snapshot.sql) — usado só pra exibição no rastreio
+    // do cliente (src/components/MyOrderSheet.tsx), avisando que a entrega
+    // pode demorar mais mesmo depois do ajuste em restaurant_branding ter
+    // expirado ou mudado.
+    let demand_extra_minutes: number | null = null;
+    let demand_reason: string | null = null;
     if (order_type === "delivery") {
       const { data: neighborhood, error: neighborhoodError } = await serviceClient
         .from("neighborhoods")
@@ -170,12 +222,14 @@ Deno.serve(async (req) => {
       // ajuste ativo (expira sozinho, sem job/trigger apagando os campos).
       const { data: branding, error: brandingError } = await serviceClient
         .from("restaurant_branding")
-        .select("demand_extra_fee, demand_expires_at")
+        .select("demand_extra_fee, demand_extra_minutes, demand_reason, demand_expires_at")
         .eq("restaurant_id", restaurant_id)
         .maybeSingle();
       if (brandingError) throw brandingError;
       if (branding?.demand_expires_at && new Date(branding.demand_expires_at).getTime() > Date.now()) {
         delivery_fee_amount += Number(branding.demand_extra_fee ?? 0);
+        demand_extra_minutes = branding.demand_extra_minutes;
+        demand_reason = branding.demand_reason;
       }
     }
 
@@ -504,11 +558,14 @@ Deno.serve(async (req) => {
         order_type,
         status: "received",
         customer_name,
+        customer_phone,
         table_label: order_type === "dine_in" ? table_label : null,
         delivery_address: order_type === "delivery" ? { text: delivery_address_text } : null,
         neighborhood_id,
         neighborhood_name,
         delivery_fee_amount,
+        demand_extra_minutes,
+        demand_reason,
         pickup_code,
         payment_status: "pending",
         payment_method,
