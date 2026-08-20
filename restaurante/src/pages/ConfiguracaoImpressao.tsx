@@ -31,6 +31,10 @@ const COPIES_OPTIONS = [1, 2, 3, 4, 5];
 // agente/README.md, seção "Publicar uma versão nova", pra como atualizar
 // esse arquivo depois de recompilar o agente.
 const AGENT_DOWNLOAD_URL = "/downloads/ImpressoraPDVSigma.exe";
+// Mesmo manifesto que o pacote autoupdate do agente lê (ver
+// agente/internal/autoupdate) — reaproveitado aqui só pra mostrar a versão
+// publicada na tela, sem duplicar esse número à mão no componente.
+const LATEST_MANIFEST_URL = "/downloads/latest.json";
 
 export function ConfiguracaoImpressao() {
   const { profile } = useSession();
@@ -48,12 +52,27 @@ export function ConfiguracaoImpressao() {
   const [error, setError] = useState<string | null>(null);
   const [extraPrinters, setExtraPrinters] = useState<string[]>([]);
   const [useSecondPrinter, setUseSecondPrinter] = useState(false);
+  // Versão publicada em /downloads/latest.json — só pra rotular o botão de
+  // download e nomear o arquivo baixado; null enquanto carrega ou se o
+  // manifesto não puder ser lido (aí cai no nome/rótulo genérico, sem
+  // travar o download em si).
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
 
   useEffect(() => {
     const extras = getExtraPrinterNames(restaurantId);
     setExtraPrinters(extras);
     setUseSecondPrinter(extras.length > 0);
   }, [restaurantId]);
+
+  useEffect(() => {
+    fetch(LATEST_MANIFEST_URL)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { version?: string } | null) => setLatestVersion(data?.version ?? null))
+      .catch(() => setLatestVersion(null));
+  }, []);
+
+  const downloadFileName = latestVersion ? `ImpressoraPDVSigma-${latestVersion}.exe` : "ImpressoraPDVSigma.exe";
+  const downloadLabel = latestVersion ? `Baixar ImpressoraPDVSigma.exe (v${latestVersion})` : "Baixar ImpressoraPDVSigma.exe";
 
   // Desligar a chave limpa a segunda impressora salva — senão ela continua
   // imprimindo em segundo plano mesmo com a chave "desligada" na tela.
@@ -175,10 +194,10 @@ export function ConfiguracaoImpressao() {
 
           <a
             href={AGENT_DOWNLOAD_URL}
-            download
+            download={downloadFileName}
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3.5 text-base font-bold text-primary-foreground shadow-card hover:brightness-105"
           >
-            <Download className="h-5 w-5" aria-hidden /> Baixar ImpressoraPDVSigma.exe
+            <Download className="h-5 w-5" aria-hidden /> {downloadLabel}
           </a>
 
           <ol className="list-decimal space-y-0.5 pl-4 text-sm text-amber-800">
@@ -209,10 +228,11 @@ export function ConfiguracaoImpressao() {
             </p>
             <a
               href={AGENT_DOWNLOAD_URL}
-              download
+              download={downloadFileName}
               className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
             >
-              <Download className="h-3 w-3" aria-hidden /> Baixar versão mais recente
+              <Download className="h-3 w-3" aria-hidden />
+              {latestVersion ? `Baixar versão mais recente (v${latestVersion})` : "Baixar versão mais recente"}
             </a>
           </div>
 
