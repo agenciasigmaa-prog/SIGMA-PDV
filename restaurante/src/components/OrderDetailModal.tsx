@@ -177,11 +177,13 @@ export function OrderDetailModal({
               </p>
             )}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              <WaiterAssignSelect
-                waiters={waiters}
-                waiterId={order.waiter_id}
-                onAssign={(waiterId) => onAssignWaiter(order.id, waiterId)}
-              />
+              {order.order_type === "dine_in" && (
+                <WaiterAssignSelect
+                  waiters={waiters}
+                  waiterId={order.waiter_id}
+                  onAssign={(waiterId) => onAssignWaiter(order.id, waiterId)}
+                />
+              )}
               {order.order_type === "delivery" && drivers && onAssignDeliveryDriver && (
                 <DeliveryDriverAssignSelect
                   drivers={drivers}

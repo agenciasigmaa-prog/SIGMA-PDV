@@ -58,9 +58,13 @@ export function useCustomers() {
         return;
       }
 
+      // role = 'customer' explícito — orders.customer_id às vezes aponta pro
+      // próprio dono/staff (dados de teste, ou um pedido manual vinculado por
+      // engano), e isso não deve aparecer misturado na lista de clientes reais.
       const { data: profiles } = await supabase
         .from("profiles")
         .select("id, full_name, email, phone, address")
+        .eq("role", "customer")
         .in("id", customerIds);
 
       const byCustomer = new Map<string, Customer>();

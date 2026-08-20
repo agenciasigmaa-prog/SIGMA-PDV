@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { useSession } from "../lib/useSession";
+import { promptGoogleSignIn } from "../lib/googleSignIn";
 import sigmaLogo from "../assets/sigma-logo.png";
 
 export function Login() {
@@ -29,12 +30,32 @@ export function Login() {
     navigate("/dashboard", { replace: true });
   }
 
+  function handleGoogle() {
+    setError(null);
+    // Só quem já é admin (role em profiles) passa do ProtectedRoute depois de
+    // logar — quem ainda não é precisa de um convite (ver /aceitar-convite).
+    promptGoogleSignIn(setError);
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-2xl bg-card p-8 shadow-elevated">
         <img src={sigmaLogo} alt="" className="mb-3 h-10 w-10" />
-        <h1 className="mb-1 text-2xl font-bold">Sigma PDV</h1>
+        <h1 className="font-brand mb-1 text-2xl">Cardápio SIG</h1>
         <p className="mb-6 text-sm text-muted-foreground">Acesso restrito à equipe da agência.</p>
+
+        <button
+          type="button"
+          onClick={handleGoogle}
+          className="mb-4 flex w-full items-center justify-center gap-2 rounded-full border border-border py-2.5 text-sm font-bold hover:bg-muted"
+        >
+          Continuar com Google
+        </button>
+
+        <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="h-px flex-1 bg-border" /> ou entre com e-mail
+          <div className="h-px flex-1 bg-border" />
+        </div>
 
         <label className="mb-1 block text-sm font-medium" htmlFor="email">
           E-mail

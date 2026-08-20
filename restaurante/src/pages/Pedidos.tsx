@@ -4,7 +4,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ManualOrderModal } from "../components/ManualOrderModal";
 import { OrderDetailModal } from "../components/OrderDetailModal";
 import { WaiterAssignSelect } from "../components/WaiterAssignSelect";
-import { DeliveryDriverAssignSelect } from "../components/DeliveryDriverAssignSelect";
+import { AssignDriverModal } from "../components/AssignDriverModal";
 import { AltaDemandaModal } from "../components/AltaDemandaModal";
 import {
   itemTotal,
@@ -18,7 +18,7 @@ import {
   type OrderType,
 } from "../lib/orders";
 import { useWaiters, type Waiter } from "../lib/waiters";
-import { useDeliveryDrivers, type DeliveryDriver } from "../lib/deliveryDrivers";
+import { useDeliveryDrivers } from "../lib/deliveryDrivers";
 import { useNeighborhoods } from "../lib/neighborhoods";
 import { useDemandAdjustment } from "../lib/demandAdjustment";
 import { useSession } from "../lib/useSession";
@@ -78,8 +78,6 @@ function OrderCard({
   order,
   waiters,
   onAssignWaiter,
-  drivers,
-  onAssignDeliveryDriver,
   onAdvance,
   onCancel,
   onDetail,
@@ -88,8 +86,6 @@ function OrderCard({
   order: IncomingOrder;
   waiters: Waiter[];
   onAssignWaiter: (waiterId: string) => void;
-  drivers: DeliveryDriver[];
-  onAssignDeliveryDriver: (driverId: string) => void;
   onAdvance: () => void;
   onCancel: () => void;
   onDetail: () => void;
@@ -118,9 +114,8 @@ function OrderCard({
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
         <h4 className="min-w-0 truncate text-sm font-bold">{order.customer_name}</h4>
         <div className="flex shrink-0 items-center gap-1.5">
-          <WaiterAssignSelect waiters={waiters} waiterId={order.waiter_id} onAssign={onAssignWaiter} />
-          {order.order_type === "delivery" && (
-            <DeliveryDriverAssignSelect drivers={drivers} driverId={order.delivery_driver_id} onAssign={onAssignDeliveryDriver} />
+          {order.order_type === "dine_in" && (
+            <WaiterAssignSelect waiters={waiters} waiterId={order.waiter_id} onAssign={onAssignWaiter} />
           )}
         </div>
       </div>
@@ -234,9 +229,7 @@ function OrderColumnBody({
   status,
   orders,
   waiters,
-  drivers,
   onAssignWaiter,
-  onAssignDeliveryDriver,
   onAdvance,
   onCancel,
   onDetail,
@@ -245,9 +238,7 @@ function OrderColumnBody({
   status: OrderStatus;
   orders: IncomingOrder[];
   waiters: Waiter[];
-  drivers: DeliveryDriver[];
   onAssignWaiter: (orderId: string, waiterId: string) => void;
-  onAssignDeliveryDriver: (orderId: string, driverId: string) => void;
   onAdvance: (order: IncomingOrder) => void;
   onCancel: (order: IncomingOrder) => void;
   onDetail: (order: IncomingOrder) => void;
@@ -283,8 +274,6 @@ function OrderColumnBody({
               order={order}
               waiters={waiters}
               onAssignWaiter={(waiterId) => onAssignWaiter(order.id, waiterId)}
-              drivers={drivers}
-              onAssignDeliveryDriver={(driverId) => onAssignDeliveryDriver(order.id, driverId)}
               onAdvance={() => onAdvance(order)}
               onCancel={() => onCancel(order)}
               onDetail={() => onDetail(order)}
@@ -318,6 +307,7 @@ export function Pedidos() {
   const { adjustment: demandAdjustment, setAdjustment: saveDemandAdjustment, clearAdjustment: clearDemandAdjustment } =
     useDemandAdjustment(restaurantId);
   const [showAltaDemanda, setShowAltaDemanda] = useState(false);
+  const [driverPromptOrder, setDriverPromptOrder] = useState<IncomingOrder | null>(null);
   const [channelFilter, setChannelFilter] = useState<"all" | OrderType>("all");
   // Só usado na visão mobile — desktop mostra todas as colunas lado a lado,
   // celular mostra uma coluna cheia por vez (ver COLUMNS/byStatus abaixo).
@@ -355,6 +345,28 @@ export function Pedidos() {
     },
     [restaurantName, restaurantId],
   );
+
+  // Avançar pra "Pronto" numa entrega é o momento certo de decidir quem
+  // sai com o pedido — em vez de um select sempre visível no card (editável
+  // a qualquer hora, mesmo antes de fazer sentido), abre um popup aqui e só
+  // avança o status depois que um motoboy for escolhido. Sem motoboy
+  // cadastrado, não trava o fluxo: avança direto, igual antes.
+  function handleAdvance(order: IncomingOrder) {
+    const next = nextStatus(order.status);
+    if (!next) return;
+    if (order.order_type === "delivery" && next === "ready" && drivers.some((d) => d.active)) {
+      setDriverPromptOrder(order);
+      return;
+    }
+    advanceStatus(order.id, next);
+  }
+
+  async function handleConfirmDriver(driverId: string) {
+    if (!driverPromptOrder) return;
+    await assignDeliveryDriver(driverPromptOrder.id, driverId);
+    await advanceStatus(driverPromptOrder.id, "ready");
+    setDriverPromptOrder(null);
+  }
 
   const filtered = useMemo(() => {
     let list = channelFilter === "all" ? orders : orders.filter((o) => o.order_type === channelFilter);
@@ -474,13 +486,8 @@ export function Pedidos() {
               status={mobileStatus}
               orders={byStatus.get(mobileStatus) ?? []}
               waiters={waiters}
-              drivers={drivers}
               onAssignWaiter={assignWaiter}
-              onAssignDeliveryDriver={assignDeliveryDriver}
-              onAdvance={(order) => {
-                const next = nextStatus(order.status);
-                if (next) advanceStatus(order.id, next);
-              }}
+              onAdvance={handleAdvance}
               onCancel={setCancelling}
               onDetail={(order) => setDetailOrderId(order.id)}
               onPrint={printOrderTicket}
@@ -495,13 +502,8 @@ export function Pedidos() {
                   status={status}
                   orders={byStatus.get(status) ?? []}
                   waiters={waiters}
-                  drivers={drivers}
                   onAssignWaiter={assignWaiter}
-                  onAssignDeliveryDriver={assignDeliveryDriver}
-                  onAdvance={(order) => {
-                    const next = nextStatus(order.status);
-                    if (next) advanceStatus(order.id, next);
-                  }}
+                  onAdvance={handleAdvance}
                   onCancel={setCancelling}
                   onDetail={(order) => setDetailOrderId(order.id)}
                   onPrint={printOrderTicket}
@@ -527,6 +529,15 @@ export function Pedidos() {
           onSave={saveDemandAdjustment}
           onClear={clearDemandAdjustment}
           onClose={() => setShowAltaDemanda(false)}
+        />
+      )}
+
+      {driverPromptOrder && (
+        <AssignDriverModal
+          order={driverPromptOrder}
+          drivers={drivers}
+          onConfirm={handleConfirmDriver}
+          onClose={() => setDriverPromptOrder(null)}
         />
       )}
 

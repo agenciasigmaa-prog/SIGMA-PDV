@@ -66,8 +66,12 @@ export function Garcom() {
   const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
 
+  // Essa tela é toda sobre atendimento de mesa (atribuir garçom, dividir
+  // conta) — pedido de retirada/entrega não tem garçom nem faz sentido
+  // "assumir" aqui, então nem entra na lista (senão apareceria pra atribuir
+  // garçom num pedido que não é de mesa).
   const openOrders = useMemo(
-    () => orders.filter((o) => o.status !== "completed" && o.status !== "cancelled"),
+    () => orders.filter((o) => o.order_type === "dine_in" && o.status !== "completed" && o.status !== "cancelled"),
     [orders],
   );
   const myOrders = useMemo(() => openOrders.filter((o) => o.waiter_id === selectedId), [openOrders, selectedId]);

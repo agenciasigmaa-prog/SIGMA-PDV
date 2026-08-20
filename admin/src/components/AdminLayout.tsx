@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { ClipboardList, LayoutDashboard, LayoutGrid, LogOut, Plus, Receipt, Store, Users } from "lucide-react";
+import { ClipboardList, LayoutDashboard, LayoutGrid, LogOut, Plus, Receipt, Shield, Store, Users } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import sigmaLogo from "../assets/sigma-logo.png";
 import { NewRestaurantModal } from "./NewRestaurantModal";
@@ -12,6 +12,7 @@ const navItems = [
   { to: "/pedidos", label: "Pedidos", icon: Receipt },
   { to: "/clientes", label: "Clientes", icon: Users },
   { to: "/auditoria", label: "Auditoria", icon: ClipboardList },
+  { to: "/administradores", label: "Administradores", icon: Shield },
 ];
 
 export function AdminLayout() {
@@ -22,7 +23,7 @@ export function AdminLayout() {
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-card p-4">
         <div className="mb-6 flex items-center gap-2 px-2">
           <img src={sigmaLogo} alt="" className="h-7 w-7" />
-          <h1 className="text-lg font-bold">Sigma PDV</h1>
+          <h1 className="font-brand text-lg">Cardápio SIG</h1>
         </div>
         <button
           onClick={() => setShowNewRestaurant(true)}

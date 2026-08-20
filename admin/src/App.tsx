@@ -1,6 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AdminLayout } from "./components/AdminLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { AceitarConvite } from "./pages/AceitarConvite";
+import { Administradores } from "./pages/Administradores";
 import { AuditLog } from "./pages/AuditLog";
 import { Clientes } from "./pages/Clientes";
 import { Dashboard } from "./pages/Dashboard";
@@ -13,6 +15,7 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/aceitar-convite" element={<AceitarConvite />} />
       <Route
         element={
           <ProtectedRoute>
@@ -26,6 +29,7 @@ function App() {
         <Route path="/pedidos" element={<Orders />} />
         <Route path="/clientes" element={<Clientes />} />
         <Route path="/auditoria" element={<AuditLog />} />
+        <Route path="/administradores" element={<Administradores />} />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

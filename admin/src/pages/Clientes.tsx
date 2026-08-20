@@ -1,11 +1,29 @@
 import { useMemo, useState } from "react";
-import { Mail, MapPin, Phone, Search, ShoppingBag, Store, X } from "lucide-react";
+import { Download, Mail, MapPin, Phone, Search, ShoppingBag, Store, X } from "lucide-react";
 import { customerMetrics, useCustomers, type Customer } from "../lib/customers";
 
 const currency = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const dateLabel = (iso: string) => new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
 
 const CHANNEL_LABEL: Record<string, string> = { dine_in: "Mesa", pickup: "Retirada", delivery: "Entrega" };
+
+// Escapa pro formato CSV: só cerca com aspas (dobrando aspas internas) quando
+// o valor tem vírgula, aspas ou quebra de linha — senão fica limpo sem aspas.
+function csvCell(value: string): string {
+  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+function downloadCsv(filename: string, rows: string[][]) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+  const blob = new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8;" }); // BOM pro Excel abrir acentuado certo
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 function CustomerDetail({ customer, onClose }: { customer: Customer; onClose: () => void }) {
   const metrics = customerMetrics(customer);
@@ -104,27 +122,58 @@ export function Clientes() {
     );
   }, [customers, search]);
 
+  // Exportação sempre pega TODOS os clientes cadastrados, não só os filtrados
+  // na busca — é uma lista pra levar pra fora (WhatsApp, e-mail marketing),
+  // não uma exportação "do que estou vendo agora".
+  function handleExportPhones() {
+    const rows = [["Nome", "Telefone"]];
+    for (const c of customers) if (c.phone) rows.push([c.full_name || "Sem nome", c.phone]);
+    downloadCsv("telefones-clientes.csv", rows);
+  }
+
+  function handleExportEmails() {
+    const rows = [["Nome", "E-mail"]];
+    for (const c of customers) if (c.email) rows.push([c.full_name || "Sem nome", c.email]);
+    downloadCsv("emails-clientes.csv", rows);
+  }
+
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold">Clientes</h2>
-        <div className="flex flex-1 max-w-xs items-center gap-2 rounded-full bg-muted px-4 py-2">
-          <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar nome, telefone ou email"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-1 min-w-[220px] items-center gap-2 rounded-full bg-muted px-4 py-2">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar nome, telefone ou email"
+              className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+          <button
+            onClick={handleExportPhones}
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-2 text-xs font-bold hover:bg-muted"
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden /> Exportar telefones
+          </button>
+          <button
+            onClick={handleExportEmails}
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-2 text-xs font-bold hover:bg-muted"
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden /> Exportar e-mails
+          </button>
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl bg-card shadow-card">
+      <div className="overflow-x-auto rounded-2xl bg-card shadow-card">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-border text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Nome</th>
-              <th className="px-4 py-3">Contato</th>
+              <th className="px-4 py-3">E-mail</th>
+              <th className="px-4 py-3">Telefone</th>
+              <th className="px-4 py-3">Endereço</th>
               <th className="px-4 py-3">Restaurantes</th>
               <th className="px-4 py-3">Pedidos</th>
               <th className="px-4 py-3">Total gasto</th>
@@ -134,17 +183,17 @@ export function Clientes() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">Carregando...</td>
+                <td colSpan={8} className="px-4 py-6 text-center text-muted-foreground">Carregando...</td>
               </tr>
             )}
             {!loading && customers.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">Nenhum cliente cadastrado ainda.</td>
+                <td colSpan={8} className="px-4 py-6 text-center text-muted-foreground">Nenhum cliente cadastrado ainda.</td>
               </tr>
             )}
             {!loading && customers.length > 0 && filtered.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">Nenhum cliente encontrado.</td>
+                <td colSpan={8} className="px-4 py-6 text-center text-muted-foreground">Nenhum cliente encontrado.</td>
               </tr>
             )}
             {!loading &&
@@ -157,7 +206,11 @@ export function Clientes() {
                     className="cursor-pointer border-b border-border last:border-0 hover:bg-muted/50"
                   >
                     <td className="px-4 py-3 font-bold">{customer.full_name || "Sem nome"}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{customer.phone || customer.email || "—"}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{customer.email || "—"}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{customer.phone || "—"}</td>
+                    <td className="max-w-[200px] truncate px-4 py-3 text-xs text-muted-foreground" title={customer.address ?? undefined}>
+                      {customer.address || "—"}
+                    </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{metrics.restaurantNames.length}</td>
                     <td className="px-4 py-3">{metrics.orderCount}</td>
                     <td className="px-4 py-3 font-bold">{currency(metrics.totalSpent)}</td>
