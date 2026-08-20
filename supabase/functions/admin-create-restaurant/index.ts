@@ -6,7 +6,15 @@ Deno.serve(async (req) => {
   try {
     const { admin, serviceClient } = await requireAdmin(req);
     const body = await req.json().catch(() => ({}));
-    const { name, contact_name, contact_email, contact_phone, owner_email, owner_password } = body;
+    const { name, contact_name, contact_email, contact_phone, owner_email, owner_password, free_trial } = body;
+
+    // Convite de "primeiro mês grátis": nasce liberado direto (status
+    // 'active'), sem passar pela tela de Cobrança, mas com prazo — depois de
+    // free_trial_until o acesso volta a travar (ver ProtectedRoute.tsx),
+    // exceto se um pagamento real já tiver entrado antes disso.
+    const trialFields = free_trial
+      ? { status: "active" as const, free_trial_until: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() }
+      : { status: "onboarding" as const };
 
     if (owner_password) {
       // Modo manual: ADM já define e-mail/senha na hora, sem link — cria o auth.users
@@ -20,7 +28,7 @@ Deno.serve(async (req) => {
 
       const { data: restaurant, error: restaurantError } = await serviceClient
         .from("restaurants")
-        .insert({ name, contact_name, contact_email, contact_phone, status: "onboarding" })
+        .insert({ name, contact_name, contact_email, contact_phone, ...trialFields })
         .select()
         .single();
       if (restaurantError) throw restaurantError;
@@ -60,12 +68,14 @@ Deno.serve(async (req) => {
     const inviteToken = crypto.randomUUID();
     const { data: restaurant, error: restaurantError } = await serviceClient
       .from("restaurants")
-      .insert({ name: "Novo restaurante", status: "onboarding", invite_token: inviteToken })
+      .insert({ name: "Novo restaurante", invite_token: inviteToken, ...trialFields })
       .select()
       .single();
     if (restaurantError) throw restaurantError;
 
-    EdgeRuntime.waitUntil(logAdminAction(serviceClient, admin.id, "restaurant_invite_created", restaurant.id, {}));
+    EdgeRuntime.waitUntil(
+      logAdminAction(serviceClient, admin.id, "restaurant_invite_created", restaurant.id, { free_trial: !!free_trial }),
+    );
 
     const restauranteAppUrl = Deno.env.get("RESTAURANTE_APP_URL") ?? "https://app.assessoriasigma.com.br";
     const inviteLink = `${restauranteAppUrl}/cadastro?token=${inviteToken}`;

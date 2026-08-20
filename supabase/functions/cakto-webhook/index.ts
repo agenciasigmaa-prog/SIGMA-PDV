@@ -106,7 +106,12 @@ Deno.serve(async (req) => {
   // está até a Cakto esgotar as tentativas de retry ou o cliente cancelar
   // de fato, pra não suspender o restaurante numa falha de cobrança isolada.
   if (ACTIVE_EVENTS.has(event)) {
-    await serviceClient.from("restaurants").update({ status: "active" }).eq("id", restaurantId);
+    // free_trial_until zerado junto: pagamento real chegou, o restaurante
+    // "formou" do trial pra assinante de verdade — sem isso, um restaurante
+    // que pagou DURANTE o primeiro mês grátis ficaria bloqueado do nada
+    // quando o prazo do trial vencesse, mesmo já pagando (ver
+    // 0061_restaurant_free_trial.sql e ProtectedRoute.tsx).
+    await serviceClient.from("restaurants").update({ status: "active", free_trial_until: null }).eq("id", restaurantId);
   } else if (SUSPEND_EVENTS.has(event)) {
     await serviceClient.from("restaurants").update({ status: "suspended" }).eq("id", restaurantId);
   }

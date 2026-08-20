@@ -5,14 +5,26 @@ import { supabase } from "../lib/supabase";
 import { describeFunctionError } from "../lib/functionError";
 
 export function NewRestaurantModal({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
+  // Passo extra antes de gerar o link: escolher se é um convite especial de
+  // "primeiro mês grátis" — diferente do resto do fluxo, que já disparava a
+  // criação sozinho ao abrir o modal (não dá mais pra fazer isso direto,
+  // precisa da escolha do admin primeiro).
+  const [freeTrial, setFreeTrial] = useState(false);
+  const [started, setStarted] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(true);
+  const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
   const navigate = useNavigate();
   const requested = useRef(false);
 
+  function handleGenerate() {
+    setStarted(true);
+    setCreating(true);
+  }
+
   useEffect(() => {
+    if (!started) return;
     // Guarda por ref (não por flag de cleanup): em StrictMode dev o efeito roda duas
     // vezes e a limpeza da primeira rodada dispara antes da fetch responder — se a
     // callback checasse uma flag "cancelled" fechada nessa primeira closure, o modal
@@ -20,7 +32,7 @@ export function NewRestaurantModal({ onClose, onCreated }: { onClose: () => void
     if (requested.current) return;
     requested.current = true;
 
-    supabase.functions.invoke("admin-create-restaurant", { body: {} }).then(async ({ data, error }) => {
+    supabase.functions.invoke("admin-create-restaurant", { body: { free_trial: freeTrial } }).then(async ({ data, error }) => {
       if (error) {
         setError(await describeFunctionError(error));
         setCreating(false);
@@ -31,7 +43,7 @@ export function NewRestaurantModal({ onClose, onCreated }: { onClose: () => void
       onCreated?.();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [started]);
 
   async function handleCopy() {
     if (!inviteLink) return;
@@ -54,6 +66,33 @@ export function NewRestaurantModal({ onClose, onCreated }: { onClose: () => void
             <X className="h-5 w-5" aria-hidden />
           </button>
         </div>
+
+        {!started && (
+          <div>
+            <label className="mb-4 flex items-start gap-2.5 rounded-xl border border-border p-3 text-sm hover:bg-muted">
+              <input
+                type="checkbox"
+                checked={freeTrial}
+                onChange={(e) => setFreeTrial(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-border"
+              />
+              <span>
+                <span className="font-bold">Primeiro mês grátis</span>
+                <br />
+                <span className="text-xs text-muted-foreground">
+                  Restaurante já entra liberado por 30 dias, sem passar pela tela de cobrança. Se não pagar até lá, o
+                  acesso trava normalmente — a não ser que você libere manualmente depois.
+                </span>
+              </span>
+            </label>
+            <button
+              onClick={handleGenerate}
+              className="w-full rounded-full bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground hover:brightness-105"
+            >
+              Gerar link
+            </button>
+          </div>
+        )}
 
         {creating && <p className="text-sm text-muted-foreground">Gerando link...</p>}
 
